@@ -35,8 +35,8 @@ jobs:
       - name: Install openFrameworks packages
         run: |
           cd "${OF_ROOT}/scripts/linux/ubuntu"
-          sudo ./install_dependencies.sh > install.log
-          sudo ./install_codecs.sh >> install.log
+          sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_dependencies.sh > install.log
+          sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_codecs.sh >> install.log
           cat install.log
 
       - name: Build CrowdOrganHost
