@@ -40,24 +40,7 @@ jobs:
           EOF
           # Clean out packages that disappeared from supported Ubuntu repos so
           # the legacy helper scripts do not explode mid-run.
-          python - <<'PY'
-            import re
-            from pathlib import Path
-
-            path = Path("install_dependencies.sh")
-            text = path.read_text()
-            replacements = (
-                (r"\blibgconf-2-4\b", ""),
-                # qt5-default vanished after Ubuntu 20.04. Swap in the modern toolchain
-                # meta packages so Qt-based openFrameworks addons still build.
-                (r"\bqt5-default\b", "qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools"),
-            )
-
-            for pattern, repl in replacements:
-                text = re.sub(pattern, repl, text)
-
-            path.write_text(text)
-          PY
+          python "${GITHUB_WORKSPACE}/.github/scripts/patch_of_deps.py" install_dependencies.sh
           sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_dependencies.sh > install.log
           sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_codecs.sh >> install.log
           cat install.log
