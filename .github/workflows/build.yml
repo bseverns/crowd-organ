@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-host:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       OF_VERSION: v0.11.2
       OF_FLAVOR: of_v0.11.2_linux64gcc6_release
@@ -38,6 +38,10 @@ jobs:
           sudo tee /etc/needrestart/conf.d/90-ci-auto.conf > /dev/null <<'EOF'
             $nrconf{restart} = 'l';
           EOF
+          # libgconf-2-4 was dropped from Ubuntu 24.04, but the OF helper scripts
+          # still list it as a dependency. Strip it so apt doesn't bail out while
+          # the rest of the packages are being installed.
+          sed -i 's/libgconf-2-4//g' install_dependencies.sh
           sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_dependencies.sh > install.log
           sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_codecs.sh >> install.log
           cat install.log
