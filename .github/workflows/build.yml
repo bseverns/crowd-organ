@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-host:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       OF_VERSION: v0.11.2
       OF_FLAVOR: of_v0.11.2_linux64gcc6_release
@@ -36,8 +36,11 @@ jobs:
         run: |
           cd "${OF_ROOT}/scripts/linux/ubuntu"
           sudo tee /etc/needrestart/conf.d/90-ci-auto.conf > /dev/null <<'EOF'
-$nrconf{restart} = 'l';
-EOF
+            $nrconf{restart} = 'l';
+          EOF
+          # Clean out packages that disappeared from supported Ubuntu repos so
+          # the legacy helper scripts do not explode mid-run.
+          python "${GITHUB_WORKSPACE}/.github/scripts/patch_of_deps.py" install_dependencies.sh
           sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_dependencies.sh > install.log
           sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_codecs.sh >> install.log
           cat install.log
