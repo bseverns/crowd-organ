@@ -10,15 +10,20 @@ This repo contains:
   - clusters depth into "pipes" (voices),
   - computes per-voice features (position, size, motion),
   - estimates motion fields from each webcam,
-  - sends those features out over OSC.
+  - runs sliding-window gesture detectors,
+  - sends those features and gesture hits out over OSC.
 - `processing_dashboard/` — a Processing sketch (**CrowdOrganDashboard**) that:
   - listens for OSC from the host,
   - visualizes the active pipes/voices and their parameters,
-  - shows global motion and per-camera motion grids.
+  - shows global motion, per-camera motion grids, and a live gesture ticker.
 - `sc/` — a SuperCollider script (**crowdOrgan.scd**) that:
   - listens for the same OSC stream,
   - instantiates one synth per `voiceId`,
-  - maps position, energy, and note into a simple pipe-like voice.
+  - maps position, energy, and note into a simple pipe-like voice,
+  - reacts to gestures by flipping registrations, envelopes, and FX scenes.
+
+> 🔔 2025-gestures: the host now throws `/room/gesture/*` events. Grab the playbook in
+> `docs/crowd_organ_gesture_design_notes.md` and wire them into your synth or dashboard.
 
 Any synthesis engine (SuperCollider, Pd, Max, DAW via OSC→MIDI bridge) can
 listen to the OSC stream and treat the crowd and space as an organ console.
@@ -79,6 +84,12 @@ Message shapes (full details in `docs/OSC_SCHEMA.md`):
   - `globalMotion` (0..1)
 - `/room/camera/zones i i i f...`
   - `cameraId, cols, rows, zoneMotion[]` (0..1 per cell)
+- `/room/gesture/voice i s f f`
+  - `voiceId, type, strength, extra (endpointY or duration)`
+- `/room/gesture/zone i s f [i]`
+  - `cameraId, type, strength, zoneIndex (for pulses)`
+- `/room/gesture/global s f`
+  - `type, strength`
 
 ## Building the openFrameworks app (macOS)
 

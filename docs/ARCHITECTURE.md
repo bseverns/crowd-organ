@@ -51,8 +51,10 @@ Responsibilities:
 - Map voice features into:
   - pitch, velocity,
   - pan, brightness, and other continuous controls.
+- Maintain short motion histories per voice/zone and run the gesture detectors.
 - Emit OSC messages with:
   - per-voice state (`/room/voice/state`, `/room/voice/note`, `/room/voice/active`),
+  - gesture events (`/room/gesture/voice`, `/room/gesture/zone`, `/room/gesture/global`),
   - global motion (`/room/global/motion`),
   - per-camera motion grids (`/room/camera/zones`).
 
@@ -62,13 +64,14 @@ Responsibilities:
 
 - Listen for OSC messages on a configured port.
 - Maintain a simple `Voice` structure mirroring the OSC schema.
-- Maintain per-camera motion grids and a global motion value.
+- Maintain per-camera motion grids, a global motion value, and the rolling gesture log.
 - Visualize:
   - active vs. inactive pipes/voices,
   - their positions and sizes,
   - optional text readout of pitch/velocity,
   - global motion meter,
-  - per-camera heatmaps (zones that glow when motion increases).
+  - per-camera heatmaps (zones that glow when motion increases),
+  - gesture pings so the operator can hear/see what just fired.
 
 Optional future:
 
@@ -79,7 +82,7 @@ Optional future:
 
 Responsibilities:
 
-- Listen for `/room/voice/*` and camera motion messages on OSC.
+- Listen for `/room/voice/*`, `/room/gesture/*`, and camera motion messages on OSC.
 - Maintain one synth voice per `voiceId`.
 - Map:
   - `note`, `velocity` → base frequency and amplitude,
@@ -87,6 +90,8 @@ Responsibilities:
   - `energy`/`motion` → brightness, modulation index, grain density, etc.
 - Use:
   - `/room/global/motion` as a master modulation source (e.g., reverb mix, master filter tilt),
-  - `/room/camera/zones` as zone-specific modulators (e.g., certain corners increase distortion).
+  - `/room/gesture/global` to jump between registrations or scene presets,
+  - `/room/camera/zones` as zone-specific modulators (e.g., certain corners increase distortion),
+  - `/room/gesture/voice` and `/room/gesture/zone` to drive per-voice timbre flips, swells, and rhythmic accents.
 
 The goal is for `CrowdOrganHost` to be musically agnostic: it just describes "what the crowd and space are doing" in a stable format that instruments can interpret in different ways.
