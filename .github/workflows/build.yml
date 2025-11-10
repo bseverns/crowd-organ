@@ -12,7 +12,7 @@ jobs:
     env:
       OF_VERSION: v0.11.2
       OF_FLAVOR: of_v0.11.2_linux64gcc6_release
-      OF_ROOT: ${{ runner.temp }}/openFrameworks
+      OF_ROOT: ${{ github.workspace }}/openFrameworks
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
