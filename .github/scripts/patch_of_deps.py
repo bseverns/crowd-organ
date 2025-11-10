@@ -211,6 +211,57 @@ def _join_tokens(tokens: Sequence[str]) -> str:
     return "".join(pieces)
 
 
+def _collect_parenthesized_block(lines: List[str], start: int) -> Tuple[int, List[str]]:
+    """Return the end index and lines covering one ``FOO=(...)`` assignment."""
+
+    block = [lines[start]]
+    depth = lines[start].count("(") - lines[start].count(")")
+    idx = start
+    while depth > 0 and idx + 1 < len(lines):
+        idx += 1
+        line = lines[idx]
+        block.append(line)
+        depth += line.count("(")
+        depth -= line.count(")")
+    return idx, block
+
+
+def _rewrite_assignment(tokens: List[str]) -> Tuple[List[str], List[str]]:
+    """Remove missing apt packages from ``FOO=(...)`` style blocks."""
+
+    if "(" not in tokens or ")" not in tokens:
+        return tokens, []
+
+    new_tokens: List[str] = []
+    skipped: List[str] = []
+    depth = 0
+    for token in tokens:
+        if token == "(":
+            depth += 1
+            new_tokens.append(token)
+            continue
+
+        if token == ")":
+            depth = max(0, depth - 1)
+            new_tokens.append(token)
+            continue
+
+        if depth:
+            if token.startswith("-") or not PACKAGE_RE.fullmatch(token):
+                new_tokens.append(token)
+                continue
+
+            if apt_candidate_exists(token):
+                new_tokens.append(token)
+            else:
+                skipped.append(token)
+            continue
+
+        new_tokens.append(token)
+
+    return new_tokens, skipped
+
+
 def _rewrite_install_command(
     tokens: List[str],
 ) -> Tuple[List[str], List[str]]:
@@ -321,6 +372,87 @@ def strip_missing_packages(script_text: str) -> Tuple[str, List[str]]:
     return script_text, skipped_packages
 
 
+def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
+    """Rewrite array assignments so missing packages vanish before runtime."""
+
+    lines = script_text.splitlines()
+    skipped_packages: List[str] = []
+    changed = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line is None:
+            i += 1
+            continue
+
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+
+        if "=" not in line:
+            i += 1
+            continue
+
+        _, rhs = line.split("=", 1)
+        stripped_rhs = rhs.strip()
+
+        if stripped_rhs.startswith("(") and "(" in line:
+            end, block = _collect_parenthesized_block(lines, i)
+            assignment = "\n".join(block)
+            tokens = _shell_split(assignment)
+            new_tokens, skipped = _rewrite_assignment(tokens)
+            if skipped:
+                indent = re.match(r"\s*", block[0]).group(0)
+                new_assignment = indent + _join_tokens(new_tokens)
+                lines[i] = new_assignment
+                for remove_idx in range(i + 1, end + 1):
+                    lines[remove_idx] = None  # type: ignore[index]
+                skipped_packages.extend(skipped)
+                changed = True
+            i = end + 1
+            continue
+
+        str_match = re.match(
+            r"^(?P<indent>\s*)(?P<name>[A-Za-z0-9_+]+)=([\"'])(?P<body>.*)\3\s*$",
+            line,
+        )
+        if str_match:
+            body = str_match.group("body")
+            indent = str_match.group("indent")
+            name = str_match.group("name")
+            quote = str_match.group(3)
+            tokens = body.split()
+            new_tokens: List[str] = []
+            skipped: List[str] = []
+            for token in tokens:
+                if token.startswith("$"):
+                    new_tokens.append(token)
+                    continue
+                if token.startswith("-") or not PACKAGE_RE.fullmatch(token):
+                    new_tokens.append(token)
+                    continue
+                if apt_candidate_exists(token):
+                    new_tokens.append(token)
+                else:
+                    skipped.append(token)
+
+            if skipped:
+                skipped_packages.extend(skipped)
+                changed = True
+                new_body = " ".join(new_tokens)
+                lines[i] = f"{indent}{name}={quote}{new_body}{quote}"
+
+        i += 1
+
+    if changed:
+        new_lines = [line for line in lines if line is not None]
+        trailing_newline = "\n" if script_text.endswith("\n") else ""
+        return "\n".join(new_lines) + trailing_newline, skipped_packages
+
+    return script_text, skipped_packages
+
+
 def patch_dependency_helper(target: Path) -> None:
     """Rewrite the dependency helper in-place with modern package names."""
 
@@ -329,14 +461,22 @@ def patch_dependency_helper(target: Path) -> None:
     for pattern, replacement in REPLACEMENTS:
         patched = re.sub(pattern, replacement, patched)
 
+    total_skipped: List[str] = []
+    patched, skipped = strip_missing_assignments(patched)
+    if skipped:
+        total_skipped.extend(skipped)
+
     patched, skipped = strip_missing_packages(patched)
+    if skipped:
+        total_skipped.extend(skipped)
 
     if patched != original:
         target.write_text(patched)
 
-    if skipped:
+    if total_skipped:
         print(
-            "Removed defunct apt packages: " + ", ".join(sorted(set(skipped)))
+            "Removed defunct apt packages: "
+            + ", ".join(sorted(set(total_skipped)))
         )
 
 
