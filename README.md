@@ -2,6 +2,8 @@
 
 A polyphonic instrument where a moving crowd becomes the pipes and the room becomes the organ.
 
+Experimental documentation soon.
+
 This repo contains:
 
 - `of_app/` — an openFrameworks app (**CrowdOrganHost**) that:
