@@ -8,11 +8,12 @@ original file remains recognizable.
 from __future__ import annotations
 
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
+
+import shlex
 
 
 # Patterns to zap or replace in the legacy dependency installer. These are
@@ -27,7 +28,23 @@ REPLACEMENTS: Sequence[Tuple[str, str]] = (
 )
 
 # Shell tokens we should not try to treat as packages.
-CONTROL_TOKENS = {"&&", "||", "|", ";"}
+CONTROL_TOKENS = {
+    "&&",
+    "||",
+    "|",
+    ";",
+    "&",
+    ")",
+    "then",
+    "fi",
+    "do",
+    "done",
+    "esac",
+    "elif",
+    "else",
+    "{",
+    "}",
+}
 
 # Package names are conservative: apt labels are alphanumeric with dashes, dots
 # or plus signs. Anything outside that gets left alone so shell variables and
@@ -74,6 +91,61 @@ def _normalize_command(block: Iterable[str]) -> str:
     return " ".join(piece for piece in pieces if piece)
 
 
+def _shell_split(command: str) -> List[str]:
+    """Split *command* into shell tokens while preserving punctuation."""
+
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _join_tokens(tokens: Sequence[str]) -> str:
+    """Reconstruct a shell command from lexical *tokens*."""
+
+    if not tokens:
+        return ""
+
+    pieces: List[str] = []
+    for token in tokens:
+        if not pieces:
+            pieces.append(token)
+            continue
+
+        if token == ";":
+            if pieces:
+                pieces[-1] += ";"
+            else:
+                pieces.append(";")
+            continue
+
+        if token in {"&&", "||", "|", "&"}:
+            pieces.append(" " + token)
+            continue
+
+        if token == "(":
+            if pieces:
+                pieces[-1] += "("
+            else:
+                pieces.append("(")
+            continue
+
+        if token == ")":
+            if pieces:
+                pieces[-1] += ")"
+            else:
+                pieces.append(")")
+            continue
+
+        if pieces[-1].endswith("("):
+            pieces.append(token)
+            continue
+
+        pieces.append(" " + token)
+
+    return "".join(pieces)
+
+
 def _rewrite_install_command(
     tokens: List[str],
 ) -> Tuple[List[str], List[str]]:
@@ -107,7 +179,13 @@ def _rewrite_install_command(
 
     new_tail: List[str] = []
     skipped: List[str] = []
+    saw_dynamic_package = False
     for token in post_install:
+        if "$" in token or "`" in token:
+            saw_dynamic_package = True
+            new_tail.append(token)
+            continue
+
         if token.startswith("-") or not PACKAGE_RE.fullmatch(token):
             new_tail.append(token)
             continue
@@ -117,8 +195,8 @@ def _rewrite_install_command(
         else:
             skipped.append(token)
 
-    has_package = any(
-        token not in CONTROL_TOKENS and not token.startswith("-")
+    has_package = saw_dynamic_package or any(
+        PACKAGE_RE.fullmatch(token) and not token.startswith("-")
         for token in new_tail
     )
 
@@ -154,12 +232,12 @@ def strip_missing_packages(script_text: str) -> Tuple[str, List[str]]:
             i = end + 1
             continue
 
-        tokens = shlex.split(logical)
+        tokens = _shell_split(logical)
         new_tokens, skipped = _rewrite_install_command(tokens)
         if skipped:
             skipped_packages.extend(skipped)
 
-        new_command = indent + shlex.join(new_tokens)
+        new_command = indent + _join_tokens(new_tokens)
         original_command = indent + logical
         if new_command != original_command:
             changed = True
