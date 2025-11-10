@@ -394,13 +394,21 @@ def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
             i += 1
             continue
 
-        _, rhs = line.split("=", 1)
+        lhs, rhs = line.split("=", 1)
         stripped_rhs = rhs.strip()
+        name_match = re.match(r"\s*([A-Za-z0-9_+]+)\s*$", lhs)
+        container_name = name_match.group(1) if name_match else ""
 
         if stripped_rhs.startswith("(") and "(" in line:
             end, block = _collect_parenthesized_block(lines, i)
             assignment = "\n".join(block)
             tokens = _shell_split(assignment)
+            if container_name and not any(
+                marker in container_name.lower()
+                for marker in ("pkg", "pack", "dep")
+            ):
+                i = end + 1
+                continue
             new_tokens, skipped = _rewrite_assignment(tokens)
             if skipped:
                 indent = re.match(r"\s*", block[0]).group(0)
@@ -422,7 +430,17 @@ def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
             indent = str_match.group("indent")
             name = str_match.group("name")
             quote = str_match.group(3)
+            lowered_name = name.lower()
+            if not any(marker in lowered_name for marker in ("pkg", "pack", "dep")):
+                i += 1
+                continue
             tokens = body.split()
+            if any(
+                token in {"apt", "apt-get", "sudo", "install", "remove", "upgrade", "update"}
+                for token in tokens
+            ):
+                i += 1
+                continue
             new_tokens: List[str] = []
             skipped: List[str] = []
             for token in tokens:
