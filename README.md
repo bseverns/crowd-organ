@@ -54,6 +54,14 @@ listen to the OSC stream and treat the crowd and space as an organ console.
     brew install libfreenect
     ```
 
+> ⚙️ **Why stick with openFrameworks instead of “plain” C++?** The host is an
+> ordinary C++14 project under the hood—the same Clang/GCC toolchains build it
+> locally and in CI. We still lean on openFrameworks because it ships the
+> windowing/GL glue, realtime event loop, addon ecosystem, and battle-tested
+> project scaffolding that let us focus on the crowd→sound logic instead of
+> rebuilding an engine from scratch. Treat it like a friendly standard library
+> extension rather than a bespoke compiler.
+
 ### Processing dashboard (`processing_dashboard/`)
 
 - [Processing](https://processing.org/) 4.x
