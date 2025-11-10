@@ -22,7 +22,7 @@ This repo contains:
   - maps position, energy, and note into a simple pipe-like voice,
   - reacts to gestures by flipping registrations, envelopes, and FX scenes.
 
-> 🔔 2025-gestures: the host now throws `/room/gesture/*` events. Grab the playbook in
+> The host now throws `/room/gesture/*` events. Grab the playbook in
 > `docs/crowd_organ_gesture_design_notes.md` and wire them into your synth or dashboard.
 
 Any synthesis engine (SuperCollider, Pd, Max, DAW via OSC→MIDI bridge) can
