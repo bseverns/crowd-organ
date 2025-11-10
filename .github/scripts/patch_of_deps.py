@@ -256,8 +256,8 @@ def strip_missing_packages(script_text: str) -> Tuple[str, List[str]]:
     return script_text, skipped_packages
 
 
-def patch_dependency_helper(target: Path) -> None:
-    """Rewrite the dependency helper in-place with modern package names."""
+def patch_dependency_helper(target: Path) -> List[str]:
+    """Rewrite *target* in-place so legacy apt deps stop exploding."""
 
     original = target.read_text()
     patched = original
@@ -269,16 +269,17 @@ def patch_dependency_helper(target: Path) -> None:
     if patched != original:
         target.write_text(patched)
 
-    if skipped:
-        print(
-            "Removed defunct apt packages: " + ", ".join(sorted(set(skipped)))
-        )
+    return skipped
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
         raise SystemExit(
-            "Usage: patch_of_deps.py <path/to/install_dependencies.sh>"
+            "Usage: patch_of_deps.py <path/to/script.sh> [<path/to/another.sh> ...]"
         )
 
-    patch_dependency_helper(Path(sys.argv[1]))
+    for script_path in sys.argv[1:]:
+        skipped = patch_dependency_helper(Path(script_path))
+        if skipped:
+            unique = ", ".join(sorted(set(skipped)))
+            print(f"Removed defunct apt packages from {script_path}: {unique}")
