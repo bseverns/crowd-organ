@@ -33,6 +33,13 @@ REPLACEMENTS: Sequence[Tuple[str, str]] = (
         r"\bqt5-default\b",
         "qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools",
     ),
+    # Pulling the Ubuntu "restricted" extras forces an interactive fonts EULA.
+    # In CI that dead-ends the run, so we keep the codecs script from touching
+    # it at all.
+    (r"\bubuntu-restricted-extras\b", ""),
+    # gstreamer1.0-libav disappeared from the Jammy repositories; retaining it
+    # causes apt to refuse the whole transaction.
+    (r"\bgstreamer1\.0-libav\b", ""),
 )
 
 # Shell tokens we should not try to treat as packages.
@@ -284,9 +291,10 @@ def patch_dependency_helper(target: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
         raise SystemExit(
-            "Usage: patch_of_deps.py <path/to/install_dependencies.sh>"
+            "Usage: patch_of_deps.py <path/to/install_dependencies.sh> [more.sh ...]"
         )
 
-    patch_dependency_helper(Path(sys.argv[1]))
+    for script_path in sys.argv[1:]:
+        patch_dependency_helper(Path(script_path))
