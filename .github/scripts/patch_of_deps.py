@@ -7,13 +7,14 @@ original file remains recognizable.
 """
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
-
-import shlex
 
 
 # Patterns to zap or replace in the legacy dependency installer. These are
@@ -67,20 +68,69 @@ CONTROL_TOKENS = {
 PACKAGE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
 
 
+APT_FAILURE_MARKERS = (
+    "has no installation candidate",
+    "but it is not going to be installed",
+    "but it is not installable",
+    "Unable to locate package",
+    "No packages found",
+)
+
+APT_LISTS_DIR = Path("/var/lib/apt/lists")
+
+
+def _apt_metadata_available() -> bool:
+    """Return True if the local apt metadata cache looks populated."""
+
+    try:
+        return any(APT_LISTS_DIR.iterdir())
+    except FileNotFoundError:  # pragma: no cover - container without apt
+        return False
+
+
+@lru_cache(maxsize=None)
 def apt_candidate_exists(package: str) -> bool:
     """Return True if apt knows how to install *package* on this runner."""
 
-    try:
-        result = subprocess.run(
-            ["apt-cache", "show", package],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    except FileNotFoundError:  # pragma: no cover - defensive guard
-        return False
+    if not _apt_metadata_available():
+        # When the apt lists are empty (for example in dev containers without
+        # a preceding ``apt-get update``) every probe reports "unable to
+        # locate". That would nuke perfectly valid packages, so we bail out
+        # early and trust the upstream list in that scenario.
+        return True
 
-    return result.returncode == 0
+    env = os.environ.copy()
+    env.setdefault("DEBIAN_FRONTEND", "noninteractive")
+
+    apt_probe = ["apt-get", "-s", "install", package]
+    if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() != 0:
+        apt_probe = ["sudo", *apt_probe]
+
+    probes = (
+        apt_probe,
+        ["apt-cache", "show", package],
+    )
+
+    for command in probes:
+        try:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                check=False,
+            )
+        except FileNotFoundError:  # pragma: no cover - defensive guard
+            continue
+
+        output = result.stdout.decode("utf-8", errors="ignore")
+        if result.returncode == 0:
+            return True
+
+        if any(marker in output for marker in APT_FAILURE_MARKERS):
+            return False
+
+    return True
 
 
 def _collect_install_block(lines: List[str], start: int) -> Tuple[int, List[str]]:
