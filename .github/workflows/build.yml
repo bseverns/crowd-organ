@@ -1,0 +1,47 @@
+name: Build Crowd Organ host
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-host:
+    runs-on: ubuntu-latest
+    env:
+      OF_VERSION: v0.11.2
+      OF_FLAVOR: of_v0.11.2_linux64gcc6_release
+      OF_ROOT: ${{ runner.temp }}/openFrameworks
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install base dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget tar build-essential
+
+      - name: Fetch openFrameworks
+        run: |
+          mkdir -p "${OF_ROOT}"
+          wget --quiet https://openframeworks.cc/versions/${OF_VERSION}/${OF_FLAVOR}.tar.gz
+          tar -xzf ${OF_FLAVOR}.tar.gz
+          shopt -s dotglob
+          mv ${OF_FLAVOR}/* "${OF_ROOT}"/
+          shopt -u dotglob
+          rm -rf "${OF_FLAVOR}"
+
+      - name: Install openFrameworks packages
+        run: |
+          cd "${OF_ROOT}/scripts/linux/ubuntu"
+          sudo ./install_dependencies.sh > install.log
+          sudo ./install_codecs.sh >> install.log
+          cat install.log
+
+      - name: Build CrowdOrganHost
+        run: |
+          mkdir -p "${OF_ROOT}/apps/myApps"
+          cp -R of_app "${OF_ROOT}/apps/myApps/CrowdOrganHost"
+          cd "${OF_ROOT}/apps/myApps/CrowdOrganHost"
+          make Release

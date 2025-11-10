@@ -93,6 +93,53 @@ Intended use:
   - "bottom-left of camera 0" → distortion drive,
   - sums of certain zones → per-engine excitation.
 
+## Gesture messages
+
+CrowdOrganHost now emits discrete gesture cues alongside the continuous motion feeds. Every
+gesture message fires once per detection (with cooldowns on the host), so downstream tools
+should treat them like triggers or scene-change hints rather than continuous controls.
+
+### `/room/gesture/voice`
+
+Discrete events for individual tracked blobs.
+
+- Address: `/room/gesture/voice`
+- Args:
+  1. `int32` — `voiceId`
+  2. `string` — `type` (`"raise"`, `"lower"`, `"swipe_left"`, `"swipe_right"`, `"shake"`, `"burst"`, `"hold"`, ...)
+  3. `float` — `strength` (0.0..1.0, relative confidence/magnitude)
+  4. `float` — `extra`
+
+`extra` carries context: for `raise`/`lower` it’s the ending Y position, for `hold` it’s a
+normalized duration, otherwise it’s `0.0` for now. The gesture doc lists mapping ideas for
+each type.
+
+### `/room/gesture/zone`
+
+Row/column sweeps and pulses inside the 4×4 camera motion grids.
+
+- Address: `/room/gesture/zone`
+- Args:
+  1. `int32` — `camId`
+  2. `string` — `type` (e.g. `"sweep_lr_top"`, `"sweep_tb_left"`, `"pulse_zone"`)
+  3. `float` — `strength` (0.0..1.0)
+  4. `int32` *(optional)* — `zoneIndex` (only sent for `pulse_zone`, identifies the 0–15 cell)
+
+Sweeps are direction-encoded in the `type` string; pulses keep their zone index so you can map
+specific corners to rhythmic gestures without inventing additional addresses.
+
+### `/room/gesture/global`
+
+Room-wide state flips derived from aggregate motion.
+
+- Address: `/room/gesture/global`
+- Args:
+  1. `string` — `type` (`"eruption"`, `"stillness"`, ...)
+  2. `float` — `strength` (0.0..1.0)
+
+Treat these as registration or scene toggles: `eruption` fires when global motion spikes from
+quiet to loud; `stillness` lands when lots of people are present but chill.
+
 ## Extensions
 
 You can extend the schema with, for instance:
