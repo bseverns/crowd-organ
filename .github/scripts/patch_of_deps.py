@@ -20,7 +20,15 @@ import shlex
 # regexes so we can surgically target the exact package tokens without
 # accidentally mangling similar names.
 REPLACEMENTS: Sequence[Tuple[str, str]] = (
+    # Removed from Ubuntu 22.04 repos, so attempting to install it just breaks
+    # the rest of the dependency transaction.
     (r"\blibgconf-2-4\b", ""),
+    # QtWebkit was fully dropped from Jammy; any attempt to install the dev
+    # package winds up with "held broken packages".
+    (
+        r"\blibqt5webkit5-dev\b",
+        "",
+    ),
     (
         r"\bqt5-default\b",
         "qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools",
