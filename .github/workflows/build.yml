@@ -36,8 +36,8 @@ jobs:
         run: |
           cd "${OF_ROOT}/scripts/linux/ubuntu"
           sudo tee /etc/needrestart/conf.d/90-ci-auto.conf > /dev/null <<'EOF'
-$nrconf{restart} = 'l';
-EOF
+            $nrconf{restart} = 'l';
+          EOF
           sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_dependencies.sh > install.log
           sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_codecs.sh >> install.log
           cat install.log
