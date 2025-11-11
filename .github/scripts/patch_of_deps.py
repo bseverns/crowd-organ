@@ -178,6 +178,42 @@ CONTROL_TOKENS = {
     "}",
 }
 
+
+def _strip_shell_variable(token: str) -> str:
+    """Return the bare variable name for shell-style *token* expansions."""
+
+    if not token.startswith("$"):
+        return ""
+
+    stripped = token[1:]
+    if stripped.startswith("{") and stripped.endswith("}") and len(stripped) > 2:
+        stripped = stripped[1:-1]
+
+    return stripped
+
+
+APT_VAR_NAMES = {
+    "APTGET",
+    "APT_GET",
+    "APTGET_CMD",
+    "APT_GET_CMD",
+    "APTGETCOMMAND",
+    "APT_GET_COMMAND",
+}
+
+
+def _is_apt_token(token: str) -> bool:
+    """Return True if *token* represents an apt-get invocation."""
+
+    if token in {"apt-get", "apt"}:
+        return True
+
+    var_name = _strip_shell_variable(token)
+    if not var_name:
+        return False
+
+    return var_name.upper() in APT_VAR_NAMES
+
 # Tokens that flag an array assignment as shell command scaffolding instead of a
 # plain package list. When these show up inside ``FOO=(...)`` we leave the block
 # alone so subcommands like "install" survive untouched. We also reuse the
@@ -503,9 +539,13 @@ def _rewrite_install_command(
 ) -> Tuple[List[str], List[str]]:
     """Remove dead packages from the parsed apt-get install command."""
 
-    try:
-        apt_idx = tokens.index("apt-get")
-    except ValueError:
+    apt_idx = None
+    for idx, token in enumerate(tokens):
+        if _is_apt_token(token):
+            apt_idx = idx
+            break
+
+    if apt_idx is None:
         return tokens, []
 
     split_idx = len(tokens)
