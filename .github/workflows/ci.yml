@@ -1,0 +1,186 @@
+name: Crowd Organ CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+env:
+  OF_VERSION: v0.11.2
+  OF_FLAVOR: of_v0.11.2_linux64gcc6_release
+  OF_ROOT: ${{ github.workspace }}/openFrameworks
+
+jobs:
+  build-host:
+    name: Build CrowdOrganHost
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            pkg-config \
+            python3 \
+            python3-pip \
+            python3-venv \
+            rsync \
+            tar \
+            wget
+
+      - name: Prepare openFrameworks workspace
+        run: |
+          set -euo pipefail
+          mkdir -p "${OF_ROOT}"
+
+      - name: Cache openFrameworks archive
+        id: cache-of
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OF_ROOT }}
+          key: of-${{ env.OF_VERSION }}-${{ env.OF_FLAVOR }}-${{ runner.os }}
+
+      - name: Fetch openFrameworks
+        if: steps.cache-of.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "${OF_ROOT}"
+          wget --quiet "https://openframeworks.cc/versions/${OF_VERSION}/${OF_FLAVOR}.tar.gz"
+          tar -xzf "${OF_FLAVOR}.tar.gz"
+          shopt -s dotglob
+          mv "${OF_FLAVOR}"/* "${OF_ROOT}/"
+          shopt -u dotglob
+          rm -rf "${OF_FLAVOR}" "${OF_FLAVOR}.tar.gz"
+
+      - name: Install openFrameworks packages
+        run: |
+          set -euo pipefail
+          cd "${OF_ROOT}/scripts/linux/ubuntu"
+          sudo tee /etc/needrestart/conf.d/90-ci-auto.conf > /dev/null <<'CONFIG'
+            $nrconf{restart} = 'l';
+          CONFIG
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/patch_of_deps.py" install_dependencies.sh
+          set +e
+          echo "::group::openFrameworks install_dependencies.sh"
+          sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_dependencies.sh 2>&1 | tee install_dependencies.log
+          deps_status=${PIPESTATUS[0]}
+          echo "::endgroup::"
+
+          echo "::group::openFrameworks install_codecs.sh"
+          sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_codecs.sh 2>&1 | tee install_codecs.log
+          codecs_status=${PIPESTATUS[0]}
+          echo "::endgroup::"
+          set -e
+
+          if [[ ${deps_status} -ne 0 ]]; then
+            echo "::error file=install_dependencies.sh::install_dependencies.sh failed with exit code ${deps_status}"
+            echo "::group::apt failure summary (install_dependencies.sh)"
+            tail -n 200 install_dependencies.log || true
+            echo "--- grep for package errors ---"
+            grep -E '^(E:|Err:|debconf:|W:)' install_dependencies.log || true
+            readarray -t dep_missing < <(
+              python3 - "$PWD/install_dependencies.log" <<'PY'
+import pathlib
+import re
+import sys
+
+log_path = pathlib.Path(sys.argv[1])
+deps = set()
+pattern = re.compile(r"\b(?:Pre)?Depends:\s*([^\n]+)")
+
+for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    match = pattern.search(line)
+    if not match:
+        continue
+    for token in re.split(r"[\s,|]+", match.group(1)):
+        token = token.strip()
+        if not token or token[0] in {"<", ":"}:
+            continue
+        deps.add(token)
+
+for token in sorted(deps):
+    print(token)
+PY
+            )
+            if ((${#dep_missing[@]})); then
+              echo "--- apt-cache policy for missing dependencies ---"
+              for pkg in "${dep_missing[@]}"; do
+                echo "::group::apt-cache policy ${pkg} (install_dependencies.sh)"
+                apt-cache policy "${pkg}" || true
+                echo "::endgroup::"
+              done
+            fi
+            echo "::endgroup::"
+            exit "${deps_status}"
+          fi
+
+          if [[ ${codecs_status} -ne 0 ]]; then
+            echo "::error file=install_codecs.sh::install_codecs.sh failed with exit code ${codecs_status}"
+            echo "::group::apt failure summary (install_codecs.sh)"
+            tail -n 200 install_codecs.log || true
+            echo "--- grep for package errors ---"
+            grep -E '^(E:|Err:|debconf:|W:)' install_codecs.log || true
+            readarray -t codec_missing < <(
+              python3 - "$PWD/install_codecs.log" <<'PY'
+import pathlib
+import re
+import sys
+
+log_path = pathlib.Path(sys.argv[1])
+deps = set()
+pattern = re.compile(r"\b(?:Pre)?Depends:\s*([^\n]+)")
+
+for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    match = pattern.search(line)
+    if not match:
+        continue
+    for token in re.split(r"[\s,|]+", match.group(1)):
+        token = token.strip()
+        if not token or token[0] in {"<", ":"}:
+            continue
+        deps.add(token)
+
+for token in sorted(deps):
+    print(token)
+PY
+            )
+            if ((${#codec_missing[@]})); then
+              echo "--- apt-cache policy for missing dependencies ---"
+              for pkg in "${codec_missing[@]}"; do
+                echo "::group::apt-cache policy ${pkg} (install_codecs.sh)"
+                apt-cache policy "${pkg}" || true
+                echo "::endgroup::"
+              done
+            fi
+            echo "::endgroup::"
+            exit "${codecs_status}"
+          fi
+
+      - name: Build CrowdOrganHost
+        run: |
+          set -euo pipefail
+          mkdir -p "${OF_ROOT}/apps/myApps"
+          rsync -a --delete "${GITHUB_WORKSPACE}/of_app/" "${OF_ROOT}/apps/myApps/CrowdOrganHost/"
+          cd "${OF_ROOT}/apps/myApps/CrowdOrganHost"
+          make -j"$(nproc)" Release
+
+      - name: Archive build products
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crowdorganhost-release
+          path: |
+            ${{ env.OF_ROOT }}/apps/myApps/CrowdOrganHost/bin
+          if-no-files-found: warn
