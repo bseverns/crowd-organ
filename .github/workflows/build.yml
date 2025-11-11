@@ -40,7 +40,7 @@ jobs:
           EOF
           # Clean out packages that disappeared from supported Ubuntu repos so
           # the legacy helper scripts do not explode mid-run.
-          python "${GITHUB_WORKSPACE}/.github/scripts/patch_of_deps.py" install_dependencies.sh
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/patch_of_deps.py" install_dependencies.sh
           sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_dependencies.sh > install.log
           sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_codecs.sh >> install.log
           cat install.log
