@@ -419,8 +419,6 @@ def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
 
         lhs, rhs = line.split("=", 1)
         stripped_rhs = rhs.strip()
-        name_match = re.match(r"\s*([A-Za-z0-9_+]+)\s*$", lhs)
-        container_name = name_match.group(1) if name_match else ""
 
         if stripped_rhs.startswith("(") and "(" in line:
             end, block = _collect_parenthesized_block(lines, i)
@@ -440,10 +438,20 @@ def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
             if any(token in ASSIGNMENT_COMMAND_TOKENS for token in body_tokens):
                 i = end + 1
                 continue
-            if container_name and not any(
-                marker in container_name.lower()
-                for marker in ("pkg", "pack", "dep")
-            ):
+            packageish_body = [
+                token
+                for token in body_tokens
+                if PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+            ]
+            if not packageish_body:
+                i = end + 1
+                continue
+            non_packageish = [
+                token
+                for token in body_tokens
+                if not PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+            ]
+            if packageish_body and non_packageish and len(packageish_body) <= len(non_packageish):
                 i = end + 1
                 continue
             new_tokens, skipped = _rewrite_assignment(tokens)
@@ -467,15 +475,27 @@ def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
             indent = str_match.group("indent")
             name = str_match.group("name")
             quote = str_match.group(3)
-            lowered_name = name.lower()
-            if not any(marker in lowered_name for marker in ("pkg", "pack", "dep")):
-                i += 1
-                continue
             tokens = body.split()
             if any(
                 token in {"apt", "apt-get", "sudo", "install", "remove", "upgrade", "update"}
                 for token in tokens
             ):
+                i += 1
+                continue
+            packageish_tokens = [
+                token
+                for token in tokens
+                if PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+            ]
+            non_packageish = [
+                token
+                for token in tokens
+                if not PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+            ]
+            if not packageish_tokens:
+                i += 1
+                continue
+            if non_packageish and len(packageish_tokens) <= len(non_packageish):
                 i += 1
                 continue
             new_tokens: List[str] = []
