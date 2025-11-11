@@ -72,9 +72,27 @@ jobs:
             $nrconf{restart} = 'l';
           CONFIG
           python3 "${GITHUB_WORKSPACE}/.github/scripts/patch_of_deps.py" install_dependencies.sh
-          sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_dependencies.sh > install.log
-          sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_codecs.sh >> install.log
-          cat install.log
+          set +e
+          echo "::group::openFrameworks install_dependencies.sh"
+          sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_dependencies.sh 2>&1 | tee install_dependencies.log
+          deps_status=${PIPESTATUS[0]}
+          echo "::endgroup::"
+
+          echo "::group::openFrameworks install_codecs.sh"
+          sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_codecs.sh 2>&1 | tee install_codecs.log
+          codecs_status=${PIPESTATUS[0]}
+          echo "::endgroup::"
+          set -e
+
+          if [[ ${deps_status} -ne 0 ]]; then
+            echo "::error file=install_dependencies.sh::install_dependencies.sh failed with exit code ${deps_status}"
+            exit "${deps_status}"
+          fi
+
+          if [[ ${codecs_status} -ne 0 ]]; then
+            echo "::error file=install_codecs.sh::install_codecs.sh failed with exit code ${codecs_status}"
+            exit "${codecs_status}"
+          fi
 
       - name: Build CrowdOrganHost
         run: |
