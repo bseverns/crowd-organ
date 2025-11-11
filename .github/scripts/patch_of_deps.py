@@ -62,6 +62,19 @@ CONTROL_TOKENS = {
     "}",
 }
 
+# Tokens that flag an array assignment as shell command scaffolding instead of a
+# plain package list. When these show up inside ``FOO=(...)`` we leave the block
+# alone so subcommands like "install" survive untouched.
+ASSIGNMENT_COMMAND_TOKENS = {
+    "apt-get",
+    "apt",
+    "sudo",
+    "install",
+    "remove",
+    "update",
+    "upgrade",
+}
+
 # Package names are conservative: apt labels are alphanumeric with dashes, dots
 # or plus signs. Anything outside that gets left alone so shell variables and
 # command substitutions survive untouched.
@@ -403,6 +416,20 @@ def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
             end, block = _collect_parenthesized_block(lines, i)
             assignment = "\n".join(block)
             tokens = _shell_split(assignment)
+            body_tokens: List[str] = []
+            depth = 0
+            for token in tokens:
+                if token == "(":
+                    depth += 1
+                    continue
+                if token == ")":
+                    depth = max(0, depth - 1)
+                    continue
+                if depth:
+                    body_tokens.append(token)
+            if any(token in ASSIGNMENT_COMMAND_TOKENS for token in body_tokens):
+                i = end + 1
+                continue
             if container_name and not any(
                 marker in container_name.lower()
                 for marker in ("pkg", "pack", "dep")
