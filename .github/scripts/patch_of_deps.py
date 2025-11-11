@@ -91,8 +91,10 @@ APT_FAILURE_MARKERS = (
     "has no installation candidate",
     "but it is not going to be installed",
     "but it is not installable",
-    "Unable to locate package",
-    "No packages found",
+    "unable to locate package",
+    "no packages found",
+    "is not available, but is referred to by another package",
+    "however the following packages replace it",
 )
 
 APT_LISTS_DIR = Path("/var/lib/apt/lists")
@@ -143,10 +145,11 @@ def apt_candidate_exists(package: str) -> bool:
             continue
 
         output = result.stdout.decode("utf-8", errors="ignore")
+        lowered_output = output.lower()
         if result.returncode == 0:
             return True
 
-        if any(marker in output for marker in APT_FAILURE_MARKERS):
+        if any(marker in lowered_output for marker in APT_FAILURE_MARKERS):
             return False
 
     return True
