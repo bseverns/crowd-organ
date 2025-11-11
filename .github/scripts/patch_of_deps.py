@@ -87,6 +87,78 @@ REPLACEMENTS: Sequence[Tuple[str, str]] = (
     (r"\blibidn11-dev\b", "libidn2-dev"),
 )
 
+# Shim we splice into the legacy installers so ``apt-get`` failures stop
+# aborting the whole run. The helper replays each install one package at a time
+# and shrugs off whatever Jammy no longer ships.
+CI_INSTALL_HELPER = """
+crowd_ci_install() {
+    local opts=()
+    local packages=()
+    local parsing_opts=1
+    local arg
+
+    for arg in "$@"; do
+        if [[ "${parsing_opts}" -eq 1 && "${arg}" == "--" ]]; then
+            parsing_opts=0
+            continue
+        fi
+        if [[ "${parsing_opts}" -eq 1 && "${arg}" == -* ]]; then
+            opts+=("${arg}")
+            continue
+        fi
+        parsing_opts=0
+        packages+=("${arg}")
+    done
+
+    if [[ ${#packages[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    local have_yes=0
+    for arg in "${opts[@]}"; do
+        if [[ "${arg}" == "-y" || "${arg}" == "--yes" || "${arg}" == "--assume-yes" ]]; then
+            have_yes=1
+            break
+        fi
+    done
+    if [[ ${have_yes} -eq 0 ]]; then
+        opts+=(-y)
+    fi
+
+    local missing=()
+    local pkg
+    local sudo_cmd=()
+    if [[ ${CROWD_CI_SUDO:-0} -eq 1 ]]; then
+        sudo_cmd=(sudo)
+        if [[ -n ${CROWD_CI_SUDO_OPTS:-} ]]; then
+            # shellcheck disable=SC2206
+            sudo_cmd+=(${CROWD_CI_SUDO_OPTS})
+        fi
+    fi
+    for pkg in "${packages[@]}"; do
+        if [[ ${#sudo_cmd[@]} -gt 0 ]]; then
+            if "${sudo_cmd[@]}" env \
+                "DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-noninteractive}" \
+                "NEEDRESTART_MODE=${NEEDRESTART_MODE:-a}" \
+                apt-get install "${opts[@]}" "${pkg}"; then
+                continue
+            fi
+        else
+            if DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}" \
+                NEEDRESTART_MODE="${NEEDRESTART_MODE:-a}" \
+                apt-get install "${opts[@]}" "${pkg}"; then
+                continue
+            fi
+        fi
+        missing+=("${pkg}")
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        printf 'Skipping missing packages: %s\n' "${missing[*]}" >&2
+    fi
+}
+"""
+
 # Shell tokens we should not try to treat as packages.
 CONTROL_TOKENS = {
     "&&",
@@ -361,6 +433,20 @@ def _simulate_missing_packages(packages: Sequence[str]) -> List[str]:
     return missing
 
 
+def _ensure_helper(script_text: str) -> str:
+    """Ensure the crowd-ci helper shim is available inside *script_text*."""
+
+    if "crowd_ci_install()" in script_text:
+        return script_text
+
+    shebang = re.match(r"#!.*\n", script_text)
+    insertion = CI_INSTALL_HELPER.strip("\n") + "\n\n"
+    if shebang:
+        idx = shebang.end()
+        return script_text[:idx] + insertion + script_text[idx:]
+    return insertion + script_text
+
+
 def _collect_parenthesized_block(lines: List[str], start: int) -> Tuple[int, List[str]]:
     """Return the end index and lines covering one ``FOO=(...)`` assignment."""
 
@@ -430,6 +516,24 @@ def _rewrite_install_command(
 
     command_tokens = tokens[apt_idx:split_idx]
     prefix_tokens = tokens[:apt_idx]
+    clean_prefix: List[str] = []
+    needs_sudo = False
+    sudo_options: List[str] = []
+
+    idx = 0
+    while idx < len(prefix_tokens):
+        token = prefix_tokens[idx]
+        if not needs_sudo and token == "sudo":
+            needs_sudo = True
+            idx += 1
+            while idx < len(prefix_tokens) and prefix_tokens[idx].startswith("-"):
+                sudo_options.append(prefix_tokens[idx])
+                idx += 1
+            continue
+        clean_prefix.append(token)
+        idx += 1
+
+    prefix_tokens = clean_prefix
     suffix_tokens = tokens[split_idx:]
 
     install_idx = None
@@ -440,19 +544,16 @@ def _rewrite_install_command(
     if install_idx is None:
         return tokens, []
 
-    pre_install = command_tokens[: install_idx + 1]
     post_install = command_tokens[install_idx + 1 :]
 
     new_tail: List[str] = []
     skipped: List[str] = []
-    saw_dynamic_package = False
     for token in post_install:
         normalized = token.lower()
         if normalized in ASSIGNMENT_COMMAND_TOKENS:
             new_tail.append(token)
             continue
         if "$" in token or "`" in token:
-            saw_dynamic_package = True
             new_tail.append(token)
             continue
 
@@ -475,13 +576,36 @@ def _rewrite_install_command(
         new_tail = [token for token in new_tail if token not in simulated_missing]
         skipped.extend(simulated_missing)
 
-    has_package = saw_dynamic_package or any(
-        PACKAGE_RE.fullmatch(token) and not token.startswith("-")
-        for token in new_tail
-    )
+    helper_options: List[str] = []
+    helper_packages: List[str] = []
+
+    pre_options = [
+        token for token in command_tokens[1:install_idx] if token.startswith("-")
+    ]
+    helper_options.extend(pre_options)
+
+    for token in new_tail:
+        if token.startswith("-") and "$" not in token and "`" not in token:
+            helper_options.append(token)
+            continue
+        helper_packages.append(token)
+
+    has_package = bool(helper_packages)
 
     if has_package:
-        new_tokens = prefix_tokens + pre_install + new_tail + suffix_tokens
+        helper_tokens: List[str] = prefix_tokens[:]
+        if needs_sudo:
+            helper_tokens.append("CROWD_CI_SUDO=1")
+            if sudo_options:
+                joined_options = " ".join(sudo_options)
+                helper_tokens.append(
+                    f"CROWD_CI_SUDO_OPTS={shlex.quote(joined_options)}"
+                )
+        helper_tokens.append("crowd_ci_install")
+        helper_tokens.extend(helper_options)
+        helper_tokens.append("--")
+        helper_tokens.extend(helper_packages)
+        new_tokens = helper_tokens + suffix_tokens
     else:
         new_tokens = prefix_tokens + ["true"] + suffix_tokens
 
@@ -495,9 +619,22 @@ def strip_missing_packages(script_text: str) -> Tuple[str, List[str]]:
     skipped_packages: List[str] = []
     changed = False
     i = 0
+    inside_helper = False
     while i < len(lines):
         line = lines[i]
         if line.lstrip().startswith("#"):
+            i += 1
+            continue
+
+        stripped = line.lstrip()
+        if stripped.startswith("crowd_ci_install()"):
+            inside_helper = True
+            i += 1
+            continue
+
+        if inside_helper:
+            if stripped.startswith("}") and not stripped.startswith("} else"):
+                inside_helper = False
             i += 1
             continue
 
@@ -703,6 +840,8 @@ def patch_dependency_helper(target: Path) -> None:
     patched, skipped = strip_missing_packages(patched)
     if skipped:
         total_skipped.extend(skipped)
+
+    patched = _ensure_helper(patched)
 
     if patched != original:
         target.write_text(patched)
