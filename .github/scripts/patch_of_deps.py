@@ -14,7 +14,7 @@ import subprocess
 import sys
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 
 # Patterns to zap or replace in the legacy dependency installer. These are
@@ -112,6 +112,29 @@ APT_FAILURE_MARKERS = (
     "no packages found",
     "is not available, but is referred to by another package",
     "however the following packages replace it",
+)
+
+APT_SIMULATION_PATTERNS = (
+    re.compile(
+        r"package ['\"]?(?P<name>[A-Za-z0-9][A-Za-z0-9.+-]*)['\"]? has no installation candidate",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"package ['\"]?(?P<name>[A-Za-z0-9][A-Za-z0-9.+-]*)['\"]? is not available",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"unable to locate package ['\"]?(?P<name>[A-Za-z0-9][A-Za-z0-9.+-]*)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?P<name>[A-Za-z0-9][A-Za-z0-9.+-]*)\s*:\s*depends:",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"depends:\s*(?P<name>[A-Za-z0-9][A-Za-z0-9.+-]*)\b[^(]*but it is not (?:going to be installed|installable)",
+        re.IGNORECASE,
+    ),
 )
 
 APT_LISTS_DIR = Path("/var/lib/apt/lists")
@@ -250,6 +273,67 @@ def _join_tokens(tokens: Sequence[str]) -> str:
     return "".join(pieces)
 
 
+def _extract_missing_from_output(
+    output: str, token_map: Dict[str, str]
+) -> List[str]:
+    """Return packages flagged as missing inside *output*.
+
+    ``token_map`` maps lowercase package names to the original token spelling so we
+    can preserve whatever casing the upstream script used.
+    """
+
+    missing: List[str] = []
+    seen = set()
+    for pattern in APT_SIMULATION_PATTERNS:
+        for match in pattern.finditer(output):
+            candidate = match.group("name").lower()
+            if candidate in token_map and candidate not in seen:
+                missing.append(token_map[candidate])
+                seen.add(candidate)
+    return missing
+
+
+def _simulate_missing_packages(packages: Sequence[str]) -> List[str]:
+    """Return packages from *packages* that apt refuses to install."""
+
+    if not packages or not _apt_metadata_available():
+        return []
+
+    env = os.environ.copy()
+    env.setdefault("DEBIAN_FRONTEND", "noninteractive")
+
+    original_order = list(dict.fromkeys(packages))
+    remaining = original_order[:]
+    missing: List[str] = []
+
+    while remaining:
+        command: List[str] = ["apt-get", "-s", "install", *remaining]
+        if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() != 0:
+            command = ["sudo", *command]
+
+        token_map = {token.lower(): token for token in remaining}
+        try:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                check=False,
+            )
+        except FileNotFoundError:  # pragma: no cover - defensive guard
+            break
+
+        output = result.stdout.decode("utf-8", errors="ignore")
+        batch_missing = _extract_missing_from_output(output, token_map)
+        if not batch_missing:
+            break
+
+        missing.extend(batch_missing)
+        remaining = [token for token in remaining if token not in batch_missing]
+
+    return missing
+
+
 def _collect_parenthesized_block(lines: List[str], start: int) -> Tuple[int, List[str]]:
     """Return the end index and lines covering one ``FOO=(...)`` assignment."""
 
@@ -353,6 +437,16 @@ def _rewrite_install_command(
             new_tail.append(token)
         else:
             skipped.append(token)
+
+    simulation_candidates = [
+        token
+        for token in new_tail
+        if PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+    ]
+    simulated_missing = _simulate_missing_packages(simulation_candidates)
+    if simulated_missing:
+        new_tail = [token for token in new_tail if token not in simulated_missing]
+        skipped.extend(simulated_missing)
 
     has_package = saw_dynamic_package or any(
         PACKAGE_RE.fullmatch(token) and not token.startswith("-")
