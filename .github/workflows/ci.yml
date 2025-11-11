@@ -1,0 +1,94 @@
+name: Crowd Organ CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+env:
+  OF_VERSION: v0.11.2
+  OF_FLAVOR: of_v0.11.2_linux64gcc6_release
+  OF_ROOT: ${{ github.workspace }}/openFrameworks
+
+jobs:
+  build-host:
+    name: Build CrowdOrganHost
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            pkg-config \
+            python3 \
+            python3-pip \
+            python3-venv \
+            rsync \
+            tar \
+            wget
+
+      - name: Prepare openFrameworks workspace
+        run: |
+          set -euo pipefail
+          mkdir -p "${OF_ROOT}"
+
+      - name: Cache openFrameworks archive
+        id: cache-of
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OF_ROOT }}
+          key: of-${{ env.OF_VERSION }}-${{ env.OF_FLAVOR }}-${{ runner.os }}
+
+      - name: Fetch openFrameworks
+        if: steps.cache-of.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "${OF_ROOT}"
+          wget --quiet "https://openframeworks.cc/versions/${OF_VERSION}/${OF_FLAVOR}.tar.gz"
+          tar -xzf "${OF_FLAVOR}.tar.gz"
+          shopt -s dotglob
+          mv "${OF_FLAVOR}"/* "${OF_ROOT}/"
+          shopt -u dotglob
+          rm -rf "${OF_FLAVOR}" "${OF_FLAVOR}.tar.gz"
+
+      - name: Install openFrameworks packages
+        run: |
+          set -euo pipefail
+          cd "${OF_ROOT}/scripts/linux/ubuntu"
+          sudo tee /etc/needrestart/conf.d/90-ci-auto.conf > /dev/null <<'CONFIG'
+            $nrconf{restart} = 'l';
+          CONFIG
+          python3 "${GITHUB_WORKSPACE}/.github/scripts/patch_of_deps.py" install_dependencies.sh
+          sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_dependencies.sh > install.log
+          sudo env "DEBIAN_FRONTEND=noninteractive" "NEEDRESTART_MODE=a" ./install_codecs.sh >> install.log
+          cat install.log
+
+      - name: Build CrowdOrganHost
+        run: |
+          set -euo pipefail
+          mkdir -p "${OF_ROOT}/apps/myApps"
+          rsync -a --delete "${GITHUB_WORKSPACE}/of_app/" "${OF_ROOT}/apps/myApps/CrowdOrganHost/"
+          cd "${OF_ROOT}/apps/myApps/CrowdOrganHost"
+          make -j"$(nproc)" Release
+
+      - name: Archive build products
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crowdorganhost-release
+          path: |
+            ${{ env.OF_ROOT }}/apps/myApps/CrowdOrganHost/bin
+          if-no-files-found: warn
