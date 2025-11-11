@@ -58,6 +58,20 @@ REPLACEMENTS: Sequence[Tuple[str, str]] = (
     (r"\bgstreamer1\.0-(?:qt5|vaapi|omx)\b", ""),
     # GTK's old GL extension bindings are long gone.
     (r"\blibgtkglext1-dev\b", ""),
+    # The codecs helper still name-drops multimedia stacks that Ubuntu pulled
+    # for legal and maintenance reasons.
+    (r"\blibquicktime-dev\b", ""),
+    (r"\blibfaac-dev\b", ""),
+    (r"\blibfaad-dev\b", ""),
+    (r"\blibx264-dev\b", ""),
+    (r"\blibmp4v2-dev\b", ""),
+    (r"\blibmpeg2-4-dev\b", ""),
+    (r"\blibmpeg3-dev\b", ""),
+    (r"\blibxvidcore-dev\b", ""),
+    (r"\blibvo-aacenc-dev\b", ""),
+    (r"\blibvo-amrwbenc-dev\b", ""),
+    (r"\blibopenni-dev\b", ""),
+    (r"\bx264\b", ""),
 )
 
 # Shell tokens we should not try to treat as packages.
@@ -145,7 +159,7 @@ def _apt_metadata_available() -> bool:
 
     try:
         return any(APT_LISTS_DIR.iterdir())
-    except FileNotFoundError:  # pragma: no cover - container without apt
+    except (FileNotFoundError, PermissionError):  # pragma: no cover - container without apt
         return False
 
 
