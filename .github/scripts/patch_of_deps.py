@@ -313,10 +313,18 @@ def _simulate_missing_packages(packages: Sequence[str]) -> List[str]:
     if not packages or not _apt_metadata_available():
         return []
 
+    filtered = [
+        token
+        for token in packages
+        if token.lower() not in ASSIGNMENT_COMMAND_TOKENS
+    ]
+    if not filtered:
+        return []
+
     env = os.environ.copy()
     env.setdefault("DEBIAN_FRONTEND", "noninteractive")
 
-    original_order = list(dict.fromkeys(packages))
+    original_order = list(dict.fromkeys(filtered))
     remaining = original_order[:]
     missing: List[str] = []
 
@@ -384,7 +392,11 @@ def _rewrite_assignment(tokens: List[str]) -> Tuple[List[str], List[str]]:
             continue
 
         if depth:
-            if token.startswith("-") or not PACKAGE_RE.fullmatch(token):
+            if (
+                token.startswith("-")
+                or not PACKAGE_RE.fullmatch(token)
+                or token.lower() in ASSIGNMENT_COMMAND_TOKENS
+            ):
                 new_tokens.append(token)
                 continue
 
@@ -443,7 +455,11 @@ def _rewrite_install_command(
             new_tail.append(token)
             continue
 
-        if token.startswith("-") or not PACKAGE_RE.fullmatch(token):
+        if (
+            token.startswith("-")
+            or not PACKAGE_RE.fullmatch(token)
+            or normalized in ASSIGNMENT_COMMAND_TOKENS
+        ):
             new_tail.append(token)
             continue
 
@@ -455,7 +471,11 @@ def _rewrite_install_command(
     simulation_candidates = [
         token
         for token in new_tail
-        if PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+        if (
+            PACKAGE_RE.fullmatch(token)
+            and not token.startswith("-")
+            and token.lower() not in ASSIGNMENT_COMMAND_TOKENS
+        )
     ]
     simulated_missing = _simulate_missing_packages(simulation_candidates)
     if simulated_missing:
@@ -463,7 +483,9 @@ def _rewrite_install_command(
         skipped.extend(simulated_missing)
 
     has_package = saw_dynamic_package or any(
-        PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+        PACKAGE_RE.fullmatch(token)
+        and not token.startswith("-")
+        and token.lower() not in ASSIGNMENT_COMMAND_TOKENS
         for token in new_tail
     )
 
@@ -569,7 +591,11 @@ def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
             packageish_body = [
                 token
                 for token in body_tokens
-                if PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+                if (
+                    PACKAGE_RE.fullmatch(token)
+                    and not token.startswith("-")
+                    and token.lower() not in ASSIGNMENT_COMMAND_TOKENS
+                )
             ]
             if not packageish_body:
                 i = end + 1
@@ -577,7 +603,10 @@ def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
             non_packageish = [
                 token
                 for token in body_tokens
-                if not PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+                if (
+                    (not PACKAGE_RE.fullmatch(token) or token.lower() in ASSIGNMENT_COMMAND_TOKENS)
+                    and not token.startswith("-")
+                )
             ]
             if packageish_body and non_packageish and len(packageish_body) <= len(non_packageish):
                 i = end + 1
@@ -613,12 +642,19 @@ def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
             packageish_tokens = [
                 token
                 for token in tokens
-                if PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+                if (
+                    PACKAGE_RE.fullmatch(token)
+                    and not token.startswith("-")
+                    and token.lower() not in ASSIGNMENT_COMMAND_TOKENS
+                )
             ]
             non_packageish = [
                 token
                 for token in tokens
-                if not PACKAGE_RE.fullmatch(token) and not token.startswith("-")
+                if (
+                    (not PACKAGE_RE.fullmatch(token) or token.lower() in ASSIGNMENT_COMMAND_TOKENS)
+                    and not token.startswith("-")
+                )
             ]
             if not packageish_tokens:
                 i += 1
@@ -632,7 +668,11 @@ def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
                 if token.startswith("$"):
                     new_tokens.append(token)
                     continue
-                if token.startswith("-") or not PACKAGE_RE.fullmatch(token):
+                if (
+                    token.startswith("-")
+                    or not PACKAGE_RE.fullmatch(token)
+                    or token.lower() in ASSIGNMENT_COMMAND_TOKENS
+                ):
                     new_tokens.append(token)
                     continue
                 if apt_candidate_exists(token):
