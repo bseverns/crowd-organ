@@ -64,7 +64,9 @@ CONTROL_TOKENS = {
 
 # Tokens that flag an array assignment as shell command scaffolding instead of a
 # plain package list. When these show up inside ``FOO=(...)`` we leave the block
-# alone so subcommands like "install" survive untouched.
+# alone so subcommands like "install" survive untouched. We also reuse the
+# collection when analysing apt invocations so verbs such as "install" or
+# "purge" never get mistaken for packages.
 ASSIGNMENT_COMMAND_TOKENS = {
     "apt-get",
     "apt",
@@ -73,6 +75,10 @@ ASSIGNMENT_COMMAND_TOKENS = {
     "remove",
     "update",
     "upgrade",
+    "autoremove",
+    "purge",
+    "dist-upgrade",
+    "full-upgrade",
 }
 
 # Package names are conservative: apt labels are alphanumeric with dashes, dots
@@ -310,6 +316,10 @@ def _rewrite_install_command(
     skipped: List[str] = []
     saw_dynamic_package = False
     for token in post_install:
+        normalized = token.lower()
+        if normalized in ASSIGNMENT_COMMAND_TOKENS:
+            new_tail.append(token)
+            continue
         if "$" in token or "`" in token:
             saw_dynamic_package = True
             new_tail.append(token)
