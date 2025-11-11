@@ -30,6 +30,18 @@ REPLACEMENTS: Sequence[Tuple[str, str]] = (
         r"\blibqt5webkit5-dev\b",
         "",
     ),
+    # Jammy keeps the GLES2 headers but the GLES1 development package was
+    # retired. Letting it through only poisons the dependency run.
+    (
+        r"\blibgles1-mesa-dev\b",
+        "",
+    ),
+    # FFmpeg dropped ``libavresample`` a while back, so the stub dev package
+    # disappeared alongside it.
+    (
+        r"\blibavresample-dev\b",
+        "",
+    ),
     (
         r"\bqt5-default\b",
         "qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools",
@@ -41,6 +53,11 @@ REPLACEMENTS: Sequence[Tuple[str, str]] = (
     # gstreamer1.0-libav disappeared from the Jammy repositories; retaining it
     # causes apt to refuse the whole transaction.
     (r"\bgstreamer1\.0-libav\b", ""),
+    # The legacy codecs helper still tries to grab GStreamer front-ends that
+    # left the archives.
+    (r"\bgstreamer1\.0-(?:qt5|vaapi|omx)\b", ""),
+    # GTK's old GL extension bindings are long gone.
+    (r"\blibgtkglext1-dev\b", ""),
 )
 
 # Shell tokens we should not try to treat as packages.
