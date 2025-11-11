@@ -7,24 +7,40 @@ original file remains recognizable.
 """
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
-
-import shlex
 
 
 # Patterns to zap or replace in the legacy dependency installer. These are
 # regexes so we can surgically target the exact package tokens without
 # accidentally mangling similar names.
 REPLACEMENTS: Sequence[Tuple[str, str]] = (
+    # Removed from Ubuntu 22.04 repos, so attempting to install it just breaks
+    # the rest of the dependency transaction.
     (r"\blibgconf-2-4\b", ""),
+    # QtWebkit was fully dropped from Jammy; any attempt to install the dev
+    # package winds up with "held broken packages".
+    (
+        r"\blibqt5webkit5-dev\b",
+        "",
+    ),
     (
         r"\bqt5-default\b",
         "qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools",
     ),
+    # Pulling the Ubuntu "restricted" extras forces an interactive fonts EULA.
+    # In CI that dead-ends the run, so we keep the codecs script from touching
+    # it at all.
+    (r"\bubuntu-restricted-extras\b", ""),
+    # gstreamer1.0-libav disappeared from the Jammy repositories; retaining it
+    # causes apt to refuse the whole transaction.
+    (r"\bgstreamer1\.0-libav\b", ""),
 )
 
 # Shell tokens we should not try to treat as packages.
@@ -46,26 +62,95 @@ CONTROL_TOKENS = {
     "}",
 }
 
+# Tokens that flag an array assignment as shell command scaffolding instead of a
+# plain package list. When these show up inside ``FOO=(...)`` we leave the block
+# alone so subcommands like "install" survive untouched.
+ASSIGNMENT_COMMAND_TOKENS = {
+    "apt-get",
+    "apt",
+    "sudo",
+    "install",
+    "remove",
+    "update",
+    "upgrade",
+}
+
+# ``apt-get install`` commands occasionally grow helper words or subcommands
+# *after* the ``install`` token (for example when a dry-run helper builds the
+# real command on the fly). If any of these markers show up in the would-be
+# package list we leave the statement untouched; otherwise we risk ripping out
+# the actual subcommand and leaving apt with a pile of incompatible flags.
+INSTALL_COMMAND_SENTINELS = {"install"}
+
 # Package names are conservative: apt labels are alphanumeric with dashes, dots
 # or plus signs. Anything outside that gets left alone so shell variables and
 # command substitutions survive untouched.
 PACKAGE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
 
 
+APT_FAILURE_MARKERS = (
+    "has no installation candidate",
+    "but it is not going to be installed",
+    "but it is not installable",
+    "Unable to locate package",
+    "No packages found",
+)
+
+APT_LISTS_DIR = Path("/var/lib/apt/lists")
+
+
+def _apt_metadata_available() -> bool:
+    """Return True if the local apt metadata cache looks populated."""
+
+    try:
+        return any(APT_LISTS_DIR.iterdir())
+    except FileNotFoundError:  # pragma: no cover - container without apt
+        return False
+
+
+@lru_cache(maxsize=None)
 def apt_candidate_exists(package: str) -> bool:
     """Return True if apt knows how to install *package* on this runner."""
 
-    try:
-        result = subprocess.run(
-            ["apt-cache", "show", package],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    except FileNotFoundError:  # pragma: no cover - defensive guard
-        return False
+    if not _apt_metadata_available():
+        # When the apt lists are empty (for example in dev containers without
+        # a preceding ``apt-get update``) every probe reports "unable to
+        # locate". That would nuke perfectly valid packages, so we bail out
+        # early and trust the upstream list in that scenario.
+        return True
 
-    return result.returncode == 0
+    env = os.environ.copy()
+    env.setdefault("DEBIAN_FRONTEND", "noninteractive")
+
+    apt_probe = ["apt-get", "-s", "install", package]
+    if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() != 0:
+        apt_probe = ["sudo", *apt_probe]
+
+    probes = (
+        apt_probe,
+        ["apt-cache", "show", package],
+    )
+
+    for command in probes:
+        try:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                check=False,
+            )
+        except FileNotFoundError:  # pragma: no cover - defensive guard
+            continue
+
+        output = result.stdout.decode("utf-8", errors="ignore")
+        if result.returncode == 0:
+            return True
+
+        if any(marker in output for marker in APT_FAILURE_MARKERS):
+            return False
+
+    return True
 
 
 def _collect_install_block(lines: List[str], start: int) -> Tuple[int, List[str]]:
@@ -146,6 +231,57 @@ def _join_tokens(tokens: Sequence[str]) -> str:
     return "".join(pieces)
 
 
+def _collect_parenthesized_block(lines: List[str], start: int) -> Tuple[int, List[str]]:
+    """Return the end index and lines covering one ``FOO=(...)`` assignment."""
+
+    block = [lines[start]]
+    depth = lines[start].count("(") - lines[start].count(")")
+    idx = start
+    while depth > 0 and idx + 1 < len(lines):
+        idx += 1
+        line = lines[idx]
+        block.append(line)
+        depth += line.count("(")
+        depth -= line.count(")")
+    return idx, block
+
+
+def _rewrite_assignment(tokens: List[str]) -> Tuple[List[str], List[str]]:
+    """Remove missing apt packages from ``FOO=(...)`` style blocks."""
+
+    if "(" not in tokens or ")" not in tokens:
+        return tokens, []
+
+    new_tokens: List[str] = []
+    skipped: List[str] = []
+    depth = 0
+    for token in tokens:
+        if token == "(":
+            depth += 1
+            new_tokens.append(token)
+            continue
+
+        if token == ")":
+            depth = max(0, depth - 1)
+            new_tokens.append(token)
+            continue
+
+        if depth:
+            if token.startswith("-") or not PACKAGE_RE.fullmatch(token):
+                new_tokens.append(token)
+                continue
+
+            if apt_candidate_exists(token):
+                new_tokens.append(token)
+            else:
+                skipped.append(token)
+            continue
+
+        new_tokens.append(token)
+
+    return new_tokens, skipped
+
+
 def _rewrite_install_command(
     tokens: List[str],
 ) -> Tuple[List[str], List[str]]:
@@ -176,6 +312,9 @@ def _rewrite_install_command(
 
     pre_install = command_tokens[: install_idx + 1]
     post_install = command_tokens[install_idx + 1 :]
+
+    if any(token in INSTALL_COMMAND_SENTINELS for token in post_install):
+        return tokens, []
 
     new_tail: List[str] = []
     skipped: List[str] = []
@@ -256,6 +395,119 @@ def strip_missing_packages(script_text: str) -> Tuple[str, List[str]]:
     return script_text, skipped_packages
 
 
+def strip_missing_assignments(script_text: str) -> Tuple[str, List[str]]:
+    """Rewrite array assignments so missing packages vanish before runtime."""
+
+    lines = script_text.splitlines()
+    skipped_packages: List[str] = []
+    changed = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line is None:
+            i += 1
+            continue
+
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+
+        if "=" not in line:
+            i += 1
+            continue
+
+        lhs, rhs = line.split("=", 1)
+        stripped_rhs = rhs.strip()
+        name_match = re.match(r"\s*([A-Za-z0-9_+]+)\s*$", lhs)
+        container_name = name_match.group(1) if name_match else ""
+
+        if stripped_rhs.startswith("(") and "(" in line:
+            end, block = _collect_parenthesized_block(lines, i)
+            assignment = "\n".join(block)
+            tokens = _shell_split(assignment)
+            body_tokens: List[str] = []
+            depth = 0
+            for token in tokens:
+                if token == "(":
+                    depth += 1
+                    continue
+                if token == ")":
+                    depth = max(0, depth - 1)
+                    continue
+                if depth:
+                    body_tokens.append(token)
+            if any(token in ASSIGNMENT_COMMAND_TOKENS for token in body_tokens):
+                i = end + 1
+                continue
+            if container_name and not any(
+                marker in container_name.lower()
+                for marker in ("pkg", "pack", "dep")
+            ):
+                i = end + 1
+                continue
+            new_tokens, skipped = _rewrite_assignment(tokens)
+            if skipped:
+                indent = re.match(r"\s*", block[0]).group(0)
+                new_assignment = indent + _join_tokens(new_tokens)
+                lines[i] = new_assignment
+                for remove_idx in range(i + 1, end + 1):
+                    lines[remove_idx] = None  # type: ignore[index]
+                skipped_packages.extend(skipped)
+                changed = True
+            i = end + 1
+            continue
+
+        str_match = re.match(
+            r"^(?P<indent>\s*)(?P<name>[A-Za-z0-9_+]+)=([\"'])(?P<body>.*)\3\s*$",
+            line,
+        )
+        if str_match:
+            body = str_match.group("body")
+            indent = str_match.group("indent")
+            name = str_match.group("name")
+            quote = str_match.group(3)
+            lowered_name = name.lower()
+            if not any(marker in lowered_name for marker in ("pkg", "pack", "dep")):
+                i += 1
+                continue
+            tokens = body.split()
+            if any(
+                token in {"apt", "apt-get", "sudo", "install", "remove", "upgrade", "update"}
+                for token in tokens
+            ):
+                i += 1
+                continue
+            new_tokens: List[str] = []
+            skipped: List[str] = []
+            for token in tokens:
+                if token.startswith("$"):
+                    new_tokens.append(token)
+                    continue
+                if token.startswith("-") or not PACKAGE_RE.fullmatch(token):
+                    new_tokens.append(token)
+                    continue
+                if apt_candidate_exists(token):
+                    new_tokens.append(token)
+                else:
+                    skipped.append(token)
+
+            if skipped:
+                skipped_packages.extend(skipped)
+                changed = True
+                new_body = " ".join(new_tokens)
+                lines[i] = f"{indent}{name}={quote}{new_body}{quote}"
+
+        i += 1
+
+    if changed:
+        new_lines = [line for line in lines if line is not None]
+        trailing_newline = "\n" if script_text.endswith("\n") else ""
+        return "\n".join(new_lines) + trailing_newline, skipped_packages
+
+    return script_text, skipped_packages
+
+
 def patch_dependency_helper(target: Path) -> None:
     """Rewrite the dependency helper in-place with modern package names."""
 
@@ -264,21 +516,30 @@ def patch_dependency_helper(target: Path) -> None:
     for pattern, replacement in REPLACEMENTS:
         patched = re.sub(pattern, replacement, patched)
 
+    total_skipped: List[str] = []
+    patched, skipped = strip_missing_assignments(patched)
+    if skipped:
+        total_skipped.extend(skipped)
+
     patched, skipped = strip_missing_packages(patched)
+    if skipped:
+        total_skipped.extend(skipped)
 
     if patched != original:
         target.write_text(patched)
 
-    if skipped:
+    if total_skipped:
         print(
-            "Removed defunct apt packages: " + ", ".join(sorted(set(skipped)))
+            "Removed defunct apt packages: "
+            + ", ".join(sorted(set(total_skipped)))
         )
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
         raise SystemExit(
-            "Usage: patch_of_deps.py <path/to/install_dependencies.sh>"
+            "Usage: patch_of_deps.py <path/to/install_dependencies.sh> [more.sh ...]"
         )
 
-    patch_dependency_helper(Path(sys.argv[1]))
+    for script_path in sys.argv[1:]:
+        patch_dependency_helper(Path(script_path))
