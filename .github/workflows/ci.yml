@@ -86,11 +86,21 @@ jobs:
 
           if [[ ${deps_status} -ne 0 ]]; then
             echo "::error file=install_dependencies.sh::install_dependencies.sh failed with exit code ${deps_status}"
+            echo "::group::apt failure summary (install_dependencies.sh)"
+            tail -n 200 install_dependencies.log || true
+            echo "--- grep for package errors ---"
+            grep -E '^(E:|Err:|debconf:|W:)' install_dependencies.log || true
+            echo "::endgroup::"
             exit "${deps_status}"
           fi
 
           if [[ ${codecs_status} -ne 0 ]]; then
             echo "::error file=install_codecs.sh::install_codecs.sh failed with exit code ${codecs_status}"
+            echo "::group::apt failure summary (install_codecs.sh)"
+            tail -n 200 install_codecs.log || true
+            echo "--- grep for package errors ---"
+            grep -E '^(E:|Err:|debconf:|W:)' install_codecs.log || true
+            echo "::endgroup::"
             exit "${codecs_status}"
           fi
 
