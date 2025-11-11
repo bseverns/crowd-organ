@@ -90,6 +90,38 @@ jobs:
             tail -n 200 install_dependencies.log || true
             echo "--- grep for package errors ---"
             grep -E '^(E:|Err:|debconf:|W:)' install_dependencies.log || true
+            readarray -t dep_missing < <(
+              python3 - "$PWD/install_dependencies.log" <<'PY'
+import pathlib
+import re
+import sys
+
+log_path = pathlib.Path(sys.argv[1])
+deps = set()
+pattern = re.compile(r"\b(?:Pre)?Depends:\s*([^\n]+)")
+
+for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    match = pattern.search(line)
+    if not match:
+        continue
+    for token in re.split(r"[\s,|]+", match.group(1)):
+        token = token.strip()
+        if not token or token[0] in {"<", ":"}:
+            continue
+        deps.add(token)
+
+for token in sorted(deps):
+    print(token)
+PY
+            )
+            if ((${#dep_missing[@]})); then
+              echo "--- apt-cache policy for missing dependencies ---"
+              for pkg in "${dep_missing[@]}"; do
+                echo "::group::apt-cache policy ${pkg} (install_dependencies.sh)"
+                apt-cache policy "${pkg}" || true
+                echo "::endgroup::"
+              done
+            fi
             echo "::endgroup::"
             exit "${deps_status}"
           fi
@@ -100,6 +132,38 @@ jobs:
             tail -n 200 install_codecs.log || true
             echo "--- grep for package errors ---"
             grep -E '^(E:|Err:|debconf:|W:)' install_codecs.log || true
+            readarray -t codec_missing < <(
+              python3 - "$PWD/install_codecs.log" <<'PY'
+import pathlib
+import re
+import sys
+
+log_path = pathlib.Path(sys.argv[1])
+deps = set()
+pattern = re.compile(r"\b(?:Pre)?Depends:\s*([^\n]+)")
+
+for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    match = pattern.search(line)
+    if not match:
+        continue
+    for token in re.split(r"[\s,|]+", match.group(1)):
+        token = token.strip()
+        if not token or token[0] in {"<", ":"}:
+            continue
+        deps.add(token)
+
+for token in sorted(deps):
+    print(token)
+PY
+            )
+            if ((${#codec_missing[@]})); then
+              echo "--- apt-cache policy for missing dependencies ---"
+              for pkg in "${codec_missing[@]}"; do
+                echo "::group::apt-cache policy ${pkg} (install_codecs.sh)"
+                apt-cache policy "${pkg}" || true
+                echo "::endgroup::"
+              done
+            fi
             echo "::endgroup::"
             exit "${codecs_status}"
           fi
