@@ -1,29 +1,31 @@
 # Crowd Organ Processing Dashboard
 
-This Processing sketch is the scrappy OSC spyglass for the crowd-organ system. It drinks OSC, paints telemetry, and helps you sanity-check what the gesture tracker is actually emitting.
+This Processing sketch is the noisy-but-kind OSC periscope for the crowd-organ system. Think of it as a stagehand who yells back what the gesture tracker is doing while you dial in mappings.
 
-## Dependencies
-- **Processing** (tested with 3.x/4.x).
-- **oscP5** + **netP5** libraries dropped into your Processing `libraries/` folder. The sketch imports both at the top, so missing them will break compilation.
+## Required ingredients
+- **Processing 3.x/4.x** installed.
+- **oscP5** and **netP5** dropped into your Processing `libraries/` folder (the sketch imports both at the top; missing jars halt compilation).
 
-## Open + Run
-1. Launch Processing and open `CrowdOrganDashboard.pde` from `processing_dashboard/`.
-2. Hit **Run**. The window comes up at 920×720 and immediately starts listening for OSC.
-3. By default the sketch binds to **port 9000**. If your upstream tracker uses a different port, edit the `new OscP5(this, 9000);` line near the top of the sketch before running.
+## Open it, run it, aim it
+1. Launch Processing and open `processing_dashboard/CrowdOrganDashboard.pde`.
+2. Hit **Run**. The window (920×720) spins up and immediately binds an OSC listener via `new OscP5(this, 9000);`.
+3. If your upstream sender is using a different port, change that constructor argument, save, and re-run so the listener rebinds.
+4. Sender side: point your tracker at the Processing machine’s IP on the chosen port (default **9000**).
 
-## What you are seeing
-- **Title + footer**: The top bar reminds you this is the OSC monitor; the footer calls out keyboard toggles.
-- **Global motion meter** (top-right): A cyan bar showing `/room/global/motion`. Recent global gestures tint a caption underneath.
-- **Voice bubbles** (center): Up to eight active voices drawn as circles on a stage map. Labels include voice index, note, and velocity; halos appear for recent `/room/gesture/voice` events and scale with gesture strength.
-- **Camera grids** (bottom): One mini-grid per camera, filled with the latest `/room/camera/zones` values. Pulsing outlines mark `/room/gesture/zone` hits; sweeps paint a translucent sweep overlay.
-- **Gesture log** (right): A rolling list of the last ~18 gestures across scopes (voice/zone/global) with strength and contextual notes (e.g., y-position for raises).
-- **Keyboard toggles**: `v` hides/shows voice gesture halos, `z` hides/shows zone flashes, `g` hides/shows global gesture labels.
+## What the overlays mean
+- **Title + footer:** reminds you what you’re looking at and which toggles exist.
+- **Global motion meter (top-right):** cyan fill for `/room/global/motion`, plus a fading caption for the last `/room/gesture/global` hit.
+- **Voice bubbles (center):** one circle per active `/room/voice/active`/`/room/voice/state` pair. Labels show voice index + note; gesture rings flare on `/room/gesture/voice` with strength-scaled radius.
+- **Camera grids (bottom):** per-camera heatmaps from `/room/camera/zones`. `/room/gesture/zone` pulses a cell outline; sweeps draw translucent cross-screen strokes.
+- **Gesture log (right):** rolling feed of the latest `/room/gesture/*` events with type, scope, and strength.
+- **Keyboard toggles:** `v` hides/shows voice gesture rings, `z` hides/shows zone flashes, `g` hides/shows global gesture labels.
 
-## Re-pointing the OSC listener
-- Change the constructor `new OscP5(this, 9000);` to match whatever port your sender is blasting at.
-- If you hot-swap ports mid-session, re-run the sketch; Processing does not hot-rebind.
+## Port cheat sheet
+- Dashboard listens on **9000** unless you edit the `OscP5` constructor.
+- Gesture tracker / sender must target that same port on the dashboard host.
+- SuperCollider engine (in `sc/`) typically sits on **57120**; keep it separate so packets don’t collide.
 
-## Troubleshooting: “why is everything quiet?”
-- Confirm your tracker is sending to the Processing machine’s IP on **port 9000** (or whatever you set). A quick `nc -lu 9000` in another terminal can confirm packets are arriving.
-- Make sure oscP5 + netP5 are actually installed; missing jars give a red stack trace before the window appears.
-- If the UI is up but blank, verify the OSC addresses match (`/room/voice/state`, `/room/voice/note`, `/room/global/motion`, `/room/camera/zones`, `/room/gesture/*`).
+## Troubleshooting: “no visuals?” check these ports
+- Confirm packets are landing: `nc -lu 9000` in a terminal on the Processing machine should print OSC bytes when the tracker is live.
+- If nothing arrives, verify the sender is aimed at the right IP + port (9000 by default).
+- If the window is up but blank, double-check oscP5 + netP5 are installed and the OSC addresses match (`/room/voice/state`, `/room/voice/note`, `/room/global/motion`, `/room/camera/zones`, `/room/gesture/*`).
