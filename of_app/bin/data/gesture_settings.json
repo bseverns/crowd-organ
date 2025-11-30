@@ -1,0 +1,34 @@
+{
+  "_readme": [
+    "Default routing cribbed straight from README: drop this next to the host binary and hit go.",
+    "Tweak gesture_host/gesture_port to punt every gesture stream at another box; leave them as-is to target localhost.",
+    "Override individual routes.* host/port/address if you want bespoke wiring; omit keys to keep the baked-in defaults.",
+    "Leave fields untouched and you can run the host immediately without hand-rolling a config—this file already matches the defaults."
+  ],
+  "listen_port": 9001,
+  "gesture_host": "127.0.0.1",
+  "gesture_port": 9000,
+  "enable_sending": true,
+  "routes": {
+    "voice_state": {
+      "address": "/room/voice/state",
+      "host": "127.0.0.1",
+      "port": 9000
+    },
+    "voice_gesture": {
+      "address": "/room/gesture/voice",
+      "host": "127.0.0.1",
+      "port": 9001
+    },
+    "zone_gesture": {
+      "address": "/room/gesture/zone",
+      "host": "127.0.0.1",
+      "port": 9001
+    },
+    "global_gesture": {
+      "address": "/room/gesture/global",
+      "host": "127.0.0.1",
+      "port": 9001
+    }
+  }
+}
