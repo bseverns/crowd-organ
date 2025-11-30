@@ -1,14 +1,13 @@
 #pragma once
 
 #include "GestureEvents.h"
-#include <array>
 #include <deque>
 #include <unordered_map>
 #include <vector>
 
 /**
- * ZoneGestureDetector stares at the 4x4 heatmaps coming from each camera and
- * tries to call out sweeps (directional waves of attention) or pulses (sudden
+ * ZoneGestureDetector stares at the heatmaps coming from each camera and tries
+ * to call out sweeps (directional waves of attention) or pulses (sudden
  * localized activity). It is less about individual performers and more about
  * how the crowd leans together. The comments here aim to demystify the state
  * machines so you can riff on them for your own stage layouts.
@@ -31,12 +30,19 @@ public:
     void setConfig(const Config& config);
     const Config& getConfig() const { return config; }
 
-    void updateCamera(int camId, const std::array<float, 16>& zones, uint64_t timestampMs, std::vector<ZoneGestureEvent>& outEvents);
+    void updateCamera(int camId,
+                      int rows,
+                      int cols,
+                      const std::vector<float>& zones,
+                      uint64_t timestampMs,
+                      std::vector<ZoneGestureEvent>& outEvents);
     void removeCamera(int camId);
 
     struct ZoneSample {
         uint64_t timestamp = 0;
-        std::array<float, 16> values{};
+        std::vector<float> values{};
+        int rows = 0;
+        int cols = 0;
     };
 
     const std::unordered_map<int, std::deque<ZoneSample>>& getHistories() const { return histories; }
@@ -54,11 +60,17 @@ private:
     bool canTrigger(int camId, const std::string& type, uint64_t timestamp, uint64_t cooldownMs);
     void rememberTrigger(int camId, const std::string& type, uint64_t timestamp);
     void detectSweeps(int camId, const std::deque<ZoneSample>& history, std::vector<ZoneGestureEvent>& outEvents);
-    void detectPulses(int camId, const ZoneSample& sample, std::vector<ZoneGestureEvent>& outEvents);
+    void detectPulses(int camId, int rows, int cols, const ZoneSample& sample, std::vector<ZoneGestureEvent>& outEvents);
 
     Config config;
+    struct CameraState {
+        int rows = 0;
+        int cols = 0;
+        std::vector<PulseTracker> pulseTrackers;
+    };
+
     std::unordered_map<int, std::deque<ZoneSample>> histories;
     std::unordered_map<int, std::unordered_map<std::string, uint64_t>> lastTriggerTimes;
-    std::unordered_map<int, std::array<PulseTracker, 16>> pulseTrackers;
+    std::unordered_map<int, CameraState> cameraStates;
 };
 

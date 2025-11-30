@@ -3,6 +3,7 @@
 #include "ofLog.h"
 
 #include <algorithm>
+#include <string>
 
 namespace {
 float clamp01(float value) {
@@ -13,6 +14,14 @@ float clamp01(float value) {
 // to update copywriting without diving into logic below.
 const std::array<std::string, 4> kRowNames = {"top", "upper_mid", "lower_mid", "bottom"};
 const std::array<std::string, 4> kColumnNames = {"left", "mid_left", "mid_right", "right"};
+
+std::string rowName(int row) {
+    return row < static_cast<int>(kRowNames.size()) ? kRowNames[row] : "row" + std::to_string(row);
+}
+
+std::string columnName(int col) {
+    return col < static_cast<int>(kColumnNames.size()) ? kColumnNames[col] : "col" + std::to_string(col);
+}
 } // namespace
 
 ZoneGestureDetector::ZoneGestureDetector() = default;
@@ -21,11 +30,48 @@ void ZoneGestureDetector::setConfig(const Config& newConfig) {
     config = newConfig;
 }
 
-void ZoneGestureDetector::updateCamera(int camId, const std::array<float, 16>& zones, uint64_t timestampMs, std::vector<ZoneGestureEvent>& outEvents) {
+void ZoneGestureDetector::updateCamera(int camId,
+                                       int rows,
+                                       int cols,
+                                       const std::vector<float>& zones,
+                                       uint64_t timestampMs,
+                                       std::vector<ZoneGestureEvent>& outEvents) {
+    if (rows <= 0 || cols <= 0) {
+        ofLogWarning("ZoneGestureDetector") << "cam " << camId << " reported invalid grid size " << rows << "x" << cols
+                                             << " – ignoring heatmap";
+        return;
+    }
+
+    int expectedSize = rows * cols;
+    if (static_cast<int>(zones.size()) != expectedSize) {
+        ofLogWarning("ZoneGestureDetector") << "cam " << camId << " heatmap size mismatch: got " << zones.size()
+                                             << " values for " << rows << "x" << cols << " grid (" << expectedSize
+                                             << " expected)";
+        return;
+    }
+
     auto& history = histories[camId];
+    auto& cameraState = cameraStates[camId];
+
+    if (cameraState.rows != rows || cameraState.cols != cols) {
+        if (cameraState.rows != 0 && cameraState.cols != 0) {
+            ofLogNotice("ZoneGestureDetector") << "cam " << camId << " grid changed from " << cameraState.rows << "x"
+                                               << cameraState.cols << " to " << rows << "x" << cols
+                                               << "; clearing history so detections track the new layout";
+        }
+        history.clear();
+        cameraState.rows = rows;
+        cameraState.cols = cols;
+        cameraState.pulseTrackers.assign(expectedSize, PulseTracker{});
+    } else if (static_cast<int>(cameraState.pulseTrackers.size()) != expectedSize) {
+        cameraState.pulseTrackers.assign(expectedSize, PulseTracker{});
+    }
+
     ZoneSample sample;
     sample.timestamp = timestampMs;
     sample.values = zones;
+    sample.rows = rows;
+    sample.cols = cols;
     history.push_back(sample);
 
     // Trim the backlog so we only carry the last few seconds of context per
@@ -36,12 +82,12 @@ void ZoneGestureDetector::updateCamera(int camId, const std::array<float, 16>& z
     }
 
     detectSweeps(camId, history, outEvents);
-    detectPulses(camId, sample, outEvents);
+    detectPulses(camId, rows, cols, sample, outEvents);
 }
 
 void ZoneGestureDetector::removeCamera(int camId) {
     histories.erase(camId);
-    pulseTrackers.erase(camId);
+    cameraStates.erase(camId);
     lastTriggerTimes.erase(camId);
 }
 
@@ -69,21 +115,34 @@ void ZoneGestureDetector::detectSweeps(int camId, const std::deque<ZoneSample>& 
     uint64_t now = history.back().timestamp;
     uint64_t minTimestamp = (now > config.sweepWindowMs) ? now - config.sweepWindowMs : 0;
 
+    const auto& latest = history.back();
+    int rows = latest.rows;
+    int cols = latest.cols;
+    if (rows <= 0 || cols <= 0 || static_cast<int>(latest.values.size()) != rows * cols) {
+        ofLogWarning("ZoneGestureDetector") << "cam " << camId << " sweep detection skipped due to malformed heatmap";
+        return;
+    }
+
     // Each row/column keeps track of where the hottest cell lived for each
     // frame. Watching those indices drift lets us detect coherent sweeps.
-    std::array<std::vector<int>, 4> rowMaxIndices;
-    std::array<std::vector<int>, 4> columnMaxIndices;
+    std::vector<std::vector<int>> rowMaxIndices(rows);
+    std::vector<std::vector<int>> columnMaxIndices(cols);
 
     for (const auto& sample : history) {
         if (sample.timestamp < minTimestamp) {
             continue;
         }
 
-        for (int row = 0; row < 4; ++row) {
-            int base = row * 4;
+        if (sample.rows != rows || sample.cols != cols || static_cast<int>(sample.values.size()) != rows * cols) {
+            ofLogWarning("ZoneGestureDetector") << "cam " << camId << " skipped a malformed sample during sweep detection";
+            continue;
+        }
+
+        for (int row = 0; row < rows; ++row) {
+            int base = row * cols;
             int maxIndex = 0;
             float maxValue = sample.values[base];
-            for (int col = 1; col < 4; ++col) {
+            for (int col = 1; col < cols; ++col) {
                 float value = sample.values[base + col];
                 if (value > maxValue) {
                     maxValue = value;
@@ -93,11 +152,11 @@ void ZoneGestureDetector::detectSweeps(int camId, const std::deque<ZoneSample>& 
             rowMaxIndices[row].push_back(maxIndex);
         }
 
-        for (int col = 0; col < 4; ++col) {
+        for (int col = 0; col < cols; ++col) {
             int maxIndex = 0;
             float maxValue = sample.values[col];
-            for (int row = 1; row < 4; ++row) {
-                float value = sample.values[row * 4 + col];
+            for (int row = 1; row < rows; ++row) {
+                float value = sample.values[row * cols + col];
                 if (value > maxValue) {
                     maxValue = value;
                     maxIndex = row;
@@ -107,10 +166,8 @@ void ZoneGestureDetector::detectSweeps(int camId, const std::deque<ZoneSample>& 
         }
     }
 
-    const auto& latest = history.back();
-
     // Rows: detect left/right motion.
-    for (int row = 0; row < 4; ++row) {
+    for (int row = 0; row < rows; ++row) {
         const auto& indices = rowMaxIndices[row];
         if (static_cast<int>(indices.size()) < config.sweepMinSteps) {
             continue;
@@ -128,10 +185,10 @@ void ZoneGestureDetector::detectSweeps(int camId, const std::deque<ZoneSample>& 
         }
 
         int delta = indices.back() - indices.front();
-        int base = row * 4;
+        int base = row * cols;
         float rowMin = latest.values[base];
         float rowMax = latest.values[base];
-        for (int col = 1; col < 4; ++col) {
+        for (int col = 1; col < cols; ++col) {
             float value = latest.values[base + col];
             rowMin = std::min(rowMin, value);
             rowMax = std::max(rowMax, value);
@@ -148,14 +205,14 @@ void ZoneGestureDetector::detectSweeps(int camId, const std::deque<ZoneSample>& 
         event.hasZoneIndex = false;
 
         if (increasing && delta >= 2) {
-            event.type = "sweep_lr_" + kRowNames[row];
+            event.type = "sweep_lr_" + rowName(row);
             if (canTrigger(camId, event.type, now, config.sweepCooldownMs)) {
                 outEvents.push_back(event);
                 rememberTrigger(camId, event.type, now);
                 ofLogNotice("ZoneGestureDetector") << "cam " << camId << " " << event.type << " strength " << event.strength;
             }
         } else if (decreasing && delta <= -2) {
-            event.type = "sweep_rl_" + kRowNames[row];
+            event.type = "sweep_rl_" + rowName(row);
             if (canTrigger(camId, event.type, now, config.sweepCooldownMs)) {
                 outEvents.push_back(event);
                 rememberTrigger(camId, event.type, now);
@@ -165,7 +222,7 @@ void ZoneGestureDetector::detectSweeps(int camId, const std::deque<ZoneSample>& 
     }
 
     // Columns: mirror the logic for top/bottom waves.
-    for (int col = 0; col < 4; ++col) {
+    for (int col = 0; col < cols; ++col) {
         const auto& indices = columnMaxIndices[col];
         if (static_cast<int>(indices.size()) < config.sweepMinSteps) {
             continue;
@@ -185,8 +242,8 @@ void ZoneGestureDetector::detectSweeps(int camId, const std::deque<ZoneSample>& 
         int delta = indices.back() - indices.front();
         float colMin = latest.values[col];
         float colMax = latest.values[col];
-        for (int row = 1; row < 4; ++row) {
-            float value = latest.values[row * 4 + col];
+        for (int row = 1; row < rows; ++row) {
+            float value = latest.values[row * cols + col];
             colMin = std::min(colMin, value);
             colMax = std::max(colMax, value);
         }
@@ -201,14 +258,14 @@ void ZoneGestureDetector::detectSweeps(int camId, const std::deque<ZoneSample>& 
         event.hasZoneIndex = false;
 
         if (increasing && delta >= 2) {
-            event.type = "sweep_tb_" + kColumnNames[col];
+            event.type = "sweep_tb_" + columnName(col);
             if (canTrigger(camId, event.type, now, config.sweepCooldownMs)) {
                 outEvents.push_back(event);
                 rememberTrigger(camId, event.type, now);
                 ofLogNotice("ZoneGestureDetector") << "cam " << camId << " " << event.type << " strength " << event.strength;
             }
         } else if (decreasing && delta <= -2) {
-            event.type = "sweep_bt_" + kColumnNames[col];
+            event.type = "sweep_bt_" + columnName(col);
             if (canTrigger(camId, event.type, now, config.sweepCooldownMs)) {
                 outEvents.push_back(event);
                 rememberTrigger(camId, event.type, now);
@@ -218,11 +275,23 @@ void ZoneGestureDetector::detectSweeps(int camId, const std::deque<ZoneSample>& 
     }
 }
 
-void ZoneGestureDetector::detectPulses(int camId, const ZoneSample& sample, std::vector<ZoneGestureEvent>& outEvents) {
-    auto& trackers = pulseTrackers[camId];
+void ZoneGestureDetector::detectPulses(int camId, int rows, int cols, const ZoneSample& sample, std::vector<ZoneGestureEvent>& outEvents) {
+    auto stateIt = cameraStates.find(camId);
+    if (stateIt == cameraStates.end()) {
+        return;
+    }
+
+    auto& trackers = stateIt->second.pulseTrackers;
+    int expectedSize = rows * cols;
+    if (rows <= 0 || cols <= 0 || static_cast<int>(sample.values.size()) != expectedSize ||
+        static_cast<int>(trackers.size()) != expectedSize) {
+        ofLogWarning("ZoneGestureDetector") << "cam " << camId << " pulse detection skipped due to malformed heatmap";
+        return;
+    }
+
     uint64_t timestamp = sample.timestamp;
 
-    for (int zoneIndex = 0; zoneIndex < 16; ++zoneIndex) {
+    for (int zoneIndex = 0; zoneIndex < expectedSize; ++zoneIndex) {
         auto& tracker = trackers[zoneIndex];
         float value = sample.values[zoneIndex];
         if (!tracker.initialized) {

@@ -4,7 +4,6 @@
 #include "ofLog.h"
 #include "ofxJSON.h"
 
-#include <array>
 #include <optional>
 #include <sstream>
 #include <vector>
@@ -536,23 +535,32 @@ void ofApp::processOscMessages() {
             gestureHistory.removeVoice(voiceId);
             voiceDetector.removeVoice(voiceId);
             ofLogNotice() << "voice " << voiceId << " removed";
-        } else if (address == "/room/camera/zones" && message.getNumArgs() >= 3 + 16) {
-            // Zone messages include grid dimensions. We only listen for 4x4 maps.
+        } else if (address == "/room/camera/zones" && message.getNumArgs() >= 3) {
             int camId = message.getArgAsInt(0);
             int rows = message.getArgAsInt(1);
             int cols = message.getArgAsInt(2);
-            if (rows == 4 && cols == 4) {
-                std::array<float, 16> zones{};
-                for (int i = 0; i < 16; ++i) {
-                    zones[i] = message.getArgAsFloat(3 + i);
-                }
-                zoneEvents.clear();
-                zoneDetector.updateCamera(camId, zones, now, zoneEvents);
-                for (const auto& event : zoneEvents) {
-                    sendZoneEvent(event);
-                }
-                lastZoneUpdate = now;
+            int expectedArgs = 3 + rows * cols;
+            if (rows <= 0 || cols <= 0) {
+                ofLogWarning() << "camera " << camId << " reported invalid zone grid " << rows << "x" << cols << " – skipping";
+                continue;
             }
+            if (message.getNumArgs() < expectedArgs) {
+                ofLogWarning() << "camera " << camId << " zones message missing values: " << message.getNumArgs() - 3
+                               << " provided, expected " << rows * cols;
+                continue;
+            }
+
+            std::vector<float> zones(rows * cols, 0.0f);
+            for (int i = 0; i < rows * cols; ++i) {
+                zones[i] = message.getArgAsFloat(3 + i);
+            }
+
+            zoneEvents.clear();
+            zoneDetector.updateCamera(camId, rows, cols, zones, now, zoneEvents);
+            for (const auto& event : zoneEvents) {
+                sendZoneEvent(event);
+            }
+            lastZoneUpdate = now;
         } else if (address == "/room/global/motion" && message.getNumArgs() >= 1) {
             lastGlobalMotion = message.getArgAsFloat(0);
             lastGlobalMotionTimestamp = now;
