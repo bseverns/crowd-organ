@@ -11,7 +11,27 @@ Default destinations:
   - Host: `127.0.0.1`
   - Port: `57120`
 
-You can add or remove OSC outputs in the host app as needed.
+Default routing from the host (unless you override in `gesture_settings.json`):
+
+- Voice state → `127.0.0.1:9000` at `/room/voice/state`
+- Gesture streams (voice/zone/global) → `127.0.0.1:9001` at `/room/gesture/*`
+
+`gesture_host`/`gesture_port` are convenience knobs for pointing every gesture stream at the same box; use `routes.voice_state`
+if you also need to move the continuous state feed.
+
+You can add or remove OSC outputs in the host app as needed. Every logical event has a configurable address/host/port trio in
+`gesture_settings.json` under the `routes` key. Address strings support a few simple substitutions if you want to bake IDs into
+the path instead of the argument list:
+
+- `{id}` / `{voiceId}` → voice ID (or zone index when the event knows which cell fired)
+- `{camId}` → camera index for zone sweeps/pulses
+- `{zoneIndex}` → zone index for pulses (overwrites `{id}`)
+- `{type}` → gesture name for global gestures
+
+Examples:
+
+- Voice gestures to a synth using per-voice paths: `/voice/{id}/gesture` → `/voice/3/gesture` with args
+- Zone pulses with friendly names: `/zone/{zoneIndex}/enter` → `/zone/11/enter`
 
 ## Per-voice messages
 

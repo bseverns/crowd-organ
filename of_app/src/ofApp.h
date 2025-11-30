@@ -8,6 +8,8 @@
 #include "VoiceGestureDetector.h"
 #include "ZoneGestureDetector.h"
 
+#include <map>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -27,6 +29,12 @@ public:
     void keyPressed(int key) override;
 
 private:
+    struct OscRoute {
+        std::string address = "/room/gesture/voice";
+        std::string host = "127.0.0.1";
+        int port = 9001;
+    };
+
     struct VoiceState {
         glm::vec3 position = glm::vec3(0.0f);
         float size = 0.0f;
@@ -37,9 +45,14 @@ private:
 
     struct OscSettings {
         int listenPort = 9000;
-        std::string gestureHost = "127.0.0.1";
-        int gesturePort = 9001;
+        std::string gestureHost = "127.0.0.1"; // legacy fallback for gesture routes
+        int gesturePort = 9001;                // legacy fallback for gesture routes
         bool enableSending = true;
+
+        OscRoute voiceStateRoute{.address = "/room/voice/state", .host = "127.0.0.1", .port = 9000};
+        OscRoute voiceGestureRoute{.address = "/room/gesture/voice", .host = "127.0.0.1", .port = 9001};
+        OscRoute zoneGestureRoute{.address = "/room/gesture/zone", .host = "127.0.0.1", .port = 9001};
+        OscRoute globalGestureRoute{.address = "/room/gesture/global", .host = "127.0.0.1", .port = 9001};
     } settings;
 
     struct GestureDebug {
@@ -65,10 +78,11 @@ private:
     void sendVoiceEvent(const VoiceGestureEvent& event);
     void sendZoneEvent(const ZoneGestureEvent& event);
     void sendGlobalEvent(const GlobalGestureEvent& event);
+    ofxOscSender& getSenderForRoute(const OscRoute& route);
     void loadGestureConfig();
 
     ofxOscReceiver stateReceiver;
-    ofxOscSender gestureSender;
+    std::map<std::pair<std::string, int>, std::unique_ptr<ofxOscSender>> gestureSenders;
 
     std::unordered_map<int, VoiceState> voices; // live state for each performer.
 
