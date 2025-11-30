@@ -4,12 +4,41 @@
 #include "ofLog.h"
 
 #include <array>
+#include <optional>
 #include <sstream>
 #include <vector>
 
 namespace {
 uint64_t nowMillis() {
     return static_cast<uint64_t>(ofGetElapsedTimeMillis());
+}
+
+std::string formatAddress(std::string pattern, std::optional<int> voiceId = std::nullopt,
+                          std::optional<int> camId = std::nullopt, std::optional<int> zoneIndex = std::nullopt,
+                          std::optional<std::string> type = std::nullopt) {
+    auto replaceAll = [](std::string& target, const std::string& from, const std::string& to) {
+        std::size_t startPos = 0;
+        while ((startPos = target.find(from, startPos)) != std::string::npos) {
+            target.replace(startPos, from.length(), to);
+            startPos += to.length();
+        }
+    };
+
+    if (voiceId.has_value()) {
+        replaceAll(pattern, "{id}", ofToString(*voiceId));
+        replaceAll(pattern, "{voiceId}", ofToString(*voiceId));
+    }
+    if (zoneIndex.has_value()) {
+        replaceAll(pattern, "{id}", ofToString(*zoneIndex));
+        replaceAll(pattern, "{zoneIndex}", ofToString(*zoneIndex));
+    }
+    if (camId.has_value()) {
+        replaceAll(pattern, "{camId}", ofToString(*camId));
+    }
+    if (type.has_value()) {
+        replaceAll(pattern, "{type}", *type);
+    }
+    return pattern;
 }
 } // namespace
 
@@ -24,14 +53,17 @@ void ofApp::setup() {
     // One receiver for the raw crowd telemetry, one sender for our gestures.
     stateReceiver.setup(settings.listenPort);
     if (settings.enableSending) {
-        gestureSender.setup(settings.gestureHost, settings.gesturePort);
+        // Warm up senders for each configured route so failures are loud during boot.
+        getSenderForRoute(settings.voiceGestureRoute);
+        getSenderForRoute(settings.zoneGestureRoute);
+        getSenderForRoute(settings.globalGestureRoute);
     }
 
     // Let configs tune how far back we remember per-voice history.
     gestureHistory.setCapacity(voiceHistoryCapacity);
 
     ofLogNotice() << "CrowdOrganHost listening for motion on port " << settings.listenPort
-                  << ", emitting gestures to " << settings.gestureHost << ":" << settings.gesturePort;
+                  << ", emitting gestures to configured routes (see gesture_settings.json).";
 }
 
 void ofApp::update() {
@@ -51,7 +83,12 @@ void ofApp::draw() {
     ss << "Crowd Organ Host – gesture pilot" << std::endl;
     ss << "voices tracked: " << voices.size() << std::endl;
     ss << "global motion: " << ofToString(lastGlobalMotion, 2) << std::endl;
-    ss << "gesture out: " << settings.gestureHost << ":" << settings.gesturePort;
+    ss << "gesture out: " << settings.voiceGestureRoute.host << ":" << settings.voiceGestureRoute.port
+       << " (voice path " << settings.voiceGestureRoute.address << ")" << std::endl;
+    ss << "            " << settings.zoneGestureRoute.host << ":" << settings.zoneGestureRoute.port << " (zone path "
+       << settings.zoneGestureRoute.address << ")" << std::endl;
+    ss << "            " << settings.globalGestureRoute.host << ":" << settings.globalGestureRoute.port << " (global path "
+       << settings.globalGestureRoute.address << ")";
     if (!settings.enableSending) {
         ss << " (muted)";
     }
@@ -92,6 +129,49 @@ void ofApp::loadSettings() {
     if (json.contains("enable_sending")) {
         settings.enableSending = json["enable_sending"].get<bool>();
     }
+
+    // Sync legacy host/port values into the gesture routes so folks can quickly
+    // steer everything without touching the per-route section. Voice state keeps
+    // its dashboard-friendly defaults unless explicitly overridden.
+    settings.voiceGestureRoute.host = settings.gestureHost;
+    settings.zoneGestureRoute.host = settings.gestureHost;
+    settings.globalGestureRoute.host = settings.gestureHost;
+    settings.voiceGestureRoute.port = settings.gesturePort;
+    settings.zoneGestureRoute.port = settings.gesturePort;
+    settings.globalGestureRoute.port = settings.gesturePort;
+
+    // Optional route overrides let you route each logical event to a bespoke address/host/port.
+    auto loadRoute = [](const ofJson& routesJson, const std::string& key, OscRoute& route) {
+        if (!routesJson.contains(key)) {
+            return;
+        }
+        const auto& node = routesJson[key];
+        if (node.contains("address")) {
+            route.address = node["address"].get<std::string>();
+        }
+        if (node.contains("host")) {
+            route.host = node["host"].get<std::string>();
+        }
+        if (node.contains("port")) {
+            route.port = node["port"].get<int>();
+        }
+    };
+
+    if (json.contains("routes")) {
+        const auto& routes = json["routes"];
+        loadRoute(routes, "voice_state", settings.voiceStateRoute);
+        loadRoute(routes, "voice_gesture", settings.voiceGestureRoute);
+        loadRoute(routes, "zone_gesture", settings.zoneGestureRoute);
+        loadRoute(routes, "global_gesture", settings.globalGestureRoute);
+    }
+
+    ofLogNotice() << "OSC routes resolved:"
+                  << " voice state " << settings.voiceStateRoute.host << ":" << settings.voiceStateRoute.port << " "
+                  << settings.voiceStateRoute.address << "; voice gesture " << settings.voiceGestureRoute.host << ":"
+                  << settings.voiceGestureRoute.port << " " << settings.voiceGestureRoute.address << "; zone gesture "
+                  << settings.zoneGestureRoute.host << ":" << settings.zoneGestureRoute.port << " "
+                  << settings.zoneGestureRoute.address << "; global gesture " << settings.globalGestureRoute.host << ":"
+                  << settings.globalGestureRoute.port << " " << settings.globalGestureRoute.address;
 }
 
 void ofApp::processOscMessages() {
@@ -195,36 +275,48 @@ void ofApp::updateGlobalGestures(uint64_t now) {
 void ofApp::sendVoiceEvent(const VoiceGestureEvent& event) {
     if (settings.enableSending) {
         ofxOscMessage message;
-        message.setAddress("/room/gesture/voice");
+        message.setAddress(formatAddress(settings.voiceGestureRoute.address, event.voiceId));
         message.addIntArg(event.voiceId);
         message.addStringArg(event.type);
         message.addFloatArg(event.strength);
         message.addFloatArg(event.extra);
-        gestureSender.sendMessage(message, false);
+        getSenderForRoute(settings.voiceGestureRoute).sendMessage(message, false);
     }
 }
 
 void ofApp::sendZoneEvent(const ZoneGestureEvent& event) {
     if (settings.enableSending) {
         ofxOscMessage message;
-        message.setAddress("/room/gesture/zone");
+        std::optional<int> zoneIndex = event.hasZoneIndex ? std::optional<int>(event.zoneIndex) : std::nullopt;
+        message.setAddress(formatAddress(settings.zoneGestureRoute.address, std::nullopt, event.camId, zoneIndex));
         message.addIntArg(event.camId);
         message.addStringArg(event.type);
         message.addFloatArg(event.strength);
         if (event.hasZoneIndex) {
             message.addIntArg(event.zoneIndex);
         }
-        gestureSender.sendMessage(message, false);
+        getSenderForRoute(settings.zoneGestureRoute).sendMessage(message, false);
     }
 }
 
 void ofApp::sendGlobalEvent(const GlobalGestureEvent& event) {
     if (settings.enableSending) {
         ofxOscMessage message;
-        message.setAddress("/room/gesture/global");
+        message.setAddress(formatAddress(settings.globalGestureRoute.address, std::nullopt, std::nullopt, std::nullopt, event.type));
         message.addStringArg(event.type);
         message.addFloatArg(event.strength);
-        gestureSender.sendMessage(message, false);
+        getSenderForRoute(settings.globalGestureRoute).sendMessage(message, false);
     }
+}
+
+ofxOscSender& ofApp::getSenderForRoute(const OscRoute& route) {
+    auto key = std::make_pair(route.host, route.port);
+    auto it = gestureSenders.find(key);
+    if (it == gestureSenders.end()) {
+        auto sender = std::make_unique<ofxOscSender>();
+        sender->setup(route.host, route.port);
+        it = gestureSenders.emplace(key, std::move(sender)).first;
+    }
+    return *(it->second);
 }
 

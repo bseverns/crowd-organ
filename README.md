@@ -69,13 +69,36 @@ Drop a config file next to the host binary (openFrameworks reads from `bin/data/
   "listen_port": 9001,
   "gesture_host": "127.0.0.1",
   "gesture_port": 9000,
-  "enable_sending": true
+  "enable_sending": true,
+  "routes": {
+    "voice_state": {
+      "address": "/room/voice/state",
+      "host": "127.0.0.1",
+      "port": 9000
+    },
+    "voice_gesture": {
+      "address": "/room/gesture/voice",
+      "host": "127.0.0.1",
+      "port": 9001
+    },
+    "zone_gesture": {
+      "address": "/room/gesture/zone",
+      "host": "127.0.0.1",
+      "port": 9001
+    },
+    "global_gesture": {
+      "address": "/room/gesture/global",
+      "host": "127.0.0.1",
+      "port": 9001
+    }
+  }
 }
 ```
 
 - `listen_port`: where the host listens for incoming OSC (e.g., from calibration tools).
-- `gesture_host` / `gesture_port`: where the host broadcasts `/room/gesture/*` (dashboard, synths, etc.).
+- `gesture_host` / `gesture_port`: legacy knobs that prefill all *gesture* routes (voice, zone, global). Voice state keeps its dashboard-friendly default of `127.0.0.1:9000` unless you override `routes.voice_state`.
 - `enable_sending`: flip off if you want to run headless without emitting OSC.
+- `routes`: per-logical-event overrides if you want, for example, `/voice/{id}/gesture` on a synth box while `/zone/{id}/enter` goes to a lighting desk.
 
 If the file is missing, the host logs a warning and falls back to built-in defaults, so touring rigs can live dangerously.
 
