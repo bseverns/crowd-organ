@@ -1,0 +1,44 @@
+{
+  "voice_history_capacity": 60,
+  "voice": {
+    "raise_delta_y": 0.18,
+    "lower_delta_y": 0.18,
+    "swipe_delta_x": 0.25,
+    "swipe_orthogonality": 1.6,
+    "raise_horizontal_limit": 0.12,
+    "swipe_vertical_limit": 0.18,
+    "shake_radius": 0.08,
+    "shake_min_sign_flips": 4,
+    "shake_min_motion": 0.08,
+    "burst_speed_threshold": 1.5,
+    "burst_max_speed": 3.5,
+    "hold_motion_threshold": 0.05,
+    "hold_duration_ms": 1200,
+    "min_window_ms": 400,
+    "max_window_ms": 1200,
+    "gesture_cooldown_ms": 900,
+    "burst_cooldown_ms": 600,
+    "hold_cooldown_ms": 1800
+  },
+  "zone": {
+    "history_ms": 2000,
+    "sweep_window_ms": 900,
+    "sweep_min_steps": 3,
+    "sweep_min_strength": 0.25,
+    "sweep_cooldown_ms": 1600,
+    "pulse_threshold": 0.35,
+    "pulse_slope_threshold": 0.05,
+    "pulse_cooldown_ms": 900
+  },
+  "global": {
+    "history_ms": 5000,
+    "eruption_low": 0.25,
+    "eruption_high": 0.7,
+    "eruption_cooldown_ms": 4500,
+    "eruption_window_ms": 1200,
+    "stillness_motion_threshold": 0.22,
+    "stillness_duration_ms": 3000,
+    "stillness_min_voices": 3,
+    "stillness_cooldown_ms": 6000
+  }
+}

@@ -1,3 +1,4 @@
 ofxKinect
 ofxOsc
 ofxOpenCv
+ofxJSON

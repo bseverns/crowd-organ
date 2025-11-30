@@ -24,6 +24,7 @@ public:
     void update() override;
     void draw() override;
     void exit() override;
+    void keyPressed(int key) override;
 
 private:
     struct VoiceState {
@@ -64,6 +65,7 @@ private:
     void sendVoiceEvent(const VoiceGestureEvent& event);
     void sendZoneEvent(const ZoneGestureEvent& event);
     void sendGlobalEvent(const GlobalGestureEvent& event);
+    void loadGestureConfig();
 
     ofxOscReceiver stateReceiver;
     ofxOscSender gestureSender;

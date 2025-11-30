@@ -51,11 +51,12 @@ practical, with side quests for folks who like to peek under the hood.
 
 ### Required openFrameworks addons
 
-The host relies on exactly three addons (they already live in `of_app/addons.make`):
+The host leans on four addons (already pinned in `of_app/addons.make`):
 
 - `ofxKinect` (Kinect v1 via libfreenect)
 - `ofxOsc`
 - `ofxOpenCv`
+- `ofxJSON` (lightweight config loader for `gesture_tuning.json`)
 
 The openFrameworks Project Generator will pull these in automatically when you
 import `of_app/`, but double-check they exist inside your `addons/` folder.
@@ -78,6 +79,21 @@ Drop a config file next to the host binary (openFrameworks reads from `bin/data/
 - `enable_sending`: flip off if you want to run headless without emitting OSC.
 
 If the file is missing, the host logs a warning and falls back to built-in defaults, so touring rigs can live dangerously.
+
+### Gesture tuning: `gesture_tuning.json`
+
+`of_app/bin/data/gesture_tuning.json` ships with the repo. It holds every knob for the voice + zone + global detectors so you can remix the vocabulary without recompiling. Edit it mid-show and tap `r` in the host window to reload the numbers instantly via `ofxJSON`—no restart, no excuses.
+
+```json
+{
+  "voice_history_capacity": 60,
+  "voice": { "raise_delta_y": 0.18, "shake_min_sign_flips": 4, "hold_cooldown_ms": 1800 },
+  "zone": { "sweep_window_ms": 900, "sweep_min_strength": 0.25 },
+  "global": { "eruption_high": 0.7, "stillness_motion_threshold": 0.22 }
+}
+```
+
+Leave any field out to keep the current value—this is a playground, not a contract.
 
 ### Run steps (host → dashboard → synth)
 

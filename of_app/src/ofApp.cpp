@@ -2,6 +2,7 @@
 
 #include "ofJson.h"
 #include "ofLog.h"
+#include "ofxJSON.h"
 
 #include <array>
 #include <sstream>
@@ -20,6 +21,7 @@ void ofApp::setup() {
     ofSetVerticalSync(true);
 
     loadSettings();
+    loadGestureConfig();
 
     // One receiver for the raw crowd telemetry, one sender for our gestures.
     stateReceiver.setup(settings.listenPort);
@@ -296,16 +298,24 @@ void ofApp::exit() {
     ofLogNotice() << "CrowdOrganHost shutting down.";
 }
 
+void ofApp::keyPressed(int key) {
+    if (key == 'r' || key == 'R') {
+        loadGestureConfig();
+    }
+}
+
 void ofApp::loadSettings() {
-    // We keep configuration lightweight: a single JSON file in the app folder
-    // so touring rigs can tweak ports without recompiling.
-    if (!ofFile::doesFileExist("gesture_settings.json")) {
-        ofLogWarning() << "gesture_settings.json not found – using defaults (" << settings.listenPort << ", " << settings.gestureHost
-                       << ":" << settings.gesturePort << ")";
+    // We keep configuration lightweight: a single JSON file in bin/data/ so
+    // touring rigs can tweak ports without recompiling.
+    const std::string settingsPath = ofToDataPath("gesture_settings.json");
+    if (!ofFile::doesFileExist(settingsPath)) {
+        ofLogWarning() << "gesture_settings.json not found at " << settingsPath
+                       << " – using defaults (" << settings.listenPort << ", " << settings.gestureHost << ":" << settings.gesturePort
+                       << ")";
         return;
     }
 
-    auto json = ofLoadJson("gesture_settings.json");
+    auto json = ofLoadJson(settingsPath);
     if (json.contains("listen_port")) {
         settings.listenPort = json["listen_port"].get<int>();
     }
@@ -318,6 +328,101 @@ void ofApp::loadSettings() {
     if (json.contains("enable_sending")) {
         settings.enableSending = json["enable_sending"].get<bool>();
     }
+}
+
+void ofApp::loadGestureConfig() {
+    // Live-tunable gesture parameters live in bin/data/ so performers can poke
+    // them mid-set. We stick with ofxJSON here because it is lightweight and
+    // happy to reload on the fly.
+    const std::string configFile = "gesture_tuning.json";
+    ofxJSONElement json;
+    if (!json.open(ofToDataPath(configFile))) {
+        ofLogWarning() << "gesture tuning file missing or invalid; keeping current values (" << configFile << ")";
+        return;
+    }
+
+    VoiceGestureDetector::Config voiceConfig = voiceDetector.getConfig();
+    ZoneGestureDetector::Config zoneConfig = zoneDetector.getConfig();
+    GlobalGestureDetector::Config globalConfig = globalDetector.getConfig();
+    std::size_t historyCapacity = voiceHistoryCapacity;
+
+    auto applyFloat = [](const ofxJSONElement& node, const std::string& key, float& target) {
+        if (node.isMember(key) && node[key].isNumeric()) {
+            target = node[key].asFloat();
+        }
+    };
+
+    auto applyInt = [](const ofxJSONElement& node, const std::string& key, int& target) {
+        if (node.isMember(key) && node[key].isNumeric()) {
+            target = node[key].asInt();
+        }
+    };
+
+    auto applyUInt64 = [](const ofxJSONElement& node, const std::string& key, uint64_t& target) {
+        if (node.isMember(key) && node[key].isNumeric()) {
+            target = static_cast<uint64_t>(node[key].asDouble());
+        }
+    };
+
+    if (json.isMember("voice_history_capacity") && json["voice_history_capacity"].isNumeric()) {
+        historyCapacity = std::max<std::size_t>(1, static_cast<std::size_t>(json["voice_history_capacity"].asUInt()));
+    }
+
+    if (json.isMember("voice")) {
+        const auto& voice = json["voice"];
+        applyFloat(voice, "raise_delta_y", voiceConfig.raiseDeltaY);
+        applyFloat(voice, "lower_delta_y", voiceConfig.lowerDeltaY);
+        applyFloat(voice, "swipe_delta_x", voiceConfig.swipeDeltaX);
+        applyFloat(voice, "swipe_orthogonality", voiceConfig.swipeOrthogonality);
+        applyFloat(voice, "raise_horizontal_limit", voiceConfig.raiseHorizontalLimit);
+        applyFloat(voice, "swipe_vertical_limit", voiceConfig.swipeVerticalLimit);
+        applyFloat(voice, "shake_radius", voiceConfig.shakeRadius);
+        applyInt(voice, "shake_min_sign_flips", voiceConfig.shakeMinSignFlips);
+        applyFloat(voice, "shake_min_motion", voiceConfig.shakeMinMotion);
+        applyFloat(voice, "burst_speed_threshold", voiceConfig.burstSpeedThreshold);
+        applyFloat(voice, "burst_max_speed", voiceConfig.burstMaxSpeed);
+        applyFloat(voice, "hold_motion_threshold", voiceConfig.holdMotionThreshold);
+        applyUInt64(voice, "hold_duration_ms", voiceConfig.holdDurationMs);
+        applyUInt64(voice, "min_window_ms", voiceConfig.minWindowMs);
+        applyUInt64(voice, "max_window_ms", voiceConfig.maxWindowMs);
+        applyUInt64(voice, "gesture_cooldown_ms", voiceConfig.gestureCooldownMs);
+        applyUInt64(voice, "burst_cooldown_ms", voiceConfig.burstCooldownMs);
+        applyUInt64(voice, "hold_cooldown_ms", voiceConfig.holdCooldownMs);
+    }
+
+    if (json.isMember("zone")) {
+        const auto& zone = json["zone"];
+        applyUInt64(zone, "history_ms", zoneConfig.historyMs);
+        applyUInt64(zone, "sweep_window_ms", zoneConfig.sweepWindowMs);
+        applyInt(zone, "sweep_min_steps", zoneConfig.sweepMinSteps);
+        applyFloat(zone, "sweep_min_strength", zoneConfig.sweepMinStrength);
+        applyUInt64(zone, "sweep_cooldown_ms", zoneConfig.sweepCooldownMs);
+        applyFloat(zone, "pulse_threshold", zoneConfig.pulseThreshold);
+        applyFloat(zone, "pulse_slope_threshold", zoneConfig.pulseSlopeThreshold);
+        applyUInt64(zone, "pulse_cooldown_ms", zoneConfig.pulseCooldownMs);
+    }
+
+    if (json.isMember("global")) {
+        const auto& global = json["global"];
+        applyUInt64(global, "history_ms", globalConfig.historyMs);
+        applyFloat(global, "eruption_low", globalConfig.eruptionLow);
+        applyFloat(global, "eruption_high", globalConfig.eruptionHigh);
+        applyUInt64(global, "eruption_cooldown_ms", globalConfig.eruptionCooldownMs);
+        applyUInt64(global, "eruption_window_ms", globalConfig.eruptionWindowMs);
+        applyFloat(global, "stillness_motion_threshold", globalConfig.stillnessMotionThreshold);
+        applyUInt64(global, "stillness_duration_ms", globalConfig.stillnessDurationMs);
+        applyInt(global, "stillness_min_voices", globalConfig.stillnessMinVoices);
+        applyUInt64(global, "stillness_cooldown_ms", globalConfig.stillnessCooldownMs);
+    }
+
+    voiceHistoryCapacity = historyCapacity;
+    gestureHistory.setCapacity(voiceHistoryCapacity);
+    voiceDetector.setConfig(voiceConfig);
+    zoneDetector.setConfig(zoneConfig);
+    globalDetector.setConfig(globalConfig);
+
+    ofLogNotice() << "reloaded gesture tuning from " << configFile
+                  << " (history " << voiceHistoryCapacity << " frames)";
 }
 
 void ofApp::processOscMessages() {
