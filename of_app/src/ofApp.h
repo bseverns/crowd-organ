@@ -92,7 +92,7 @@ private:
 
     GestureHistory gestureHistory;             // per-voice motion breadcrumbs.
     VoiceGestureDetector voiceDetector;        // per-voice gesture logic.
-    ZoneGestureDetector zoneDetector;          // 4x4 grid sweep/pulse logic.
+    ZoneGestureDetector zoneDetector;          // camera grid sweep/pulse logic.
     GlobalGestureDetector globalDetector;      // crowd-wide eruption/stillness.
 
     float lastGlobalMotion = 0.0f;
