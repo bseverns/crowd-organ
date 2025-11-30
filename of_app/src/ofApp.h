@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 /**
  * ofApp is the conductor glue that ties together OSC I/O, gesture detection,
@@ -25,6 +26,7 @@ public:
     void update() override;
     void draw() override;
     void exit() override;
+    void keyPressed(int key) override;
 
 private:
     struct OscRoute {
@@ -53,6 +55,21 @@ private:
         OscRoute globalGestureRoute{.address = "/room/gesture/global", .host = "127.0.0.1", .port = 9001};
     } settings;
 
+    struct GestureDebug {
+        std::string type;
+        float strength = 0.0f;
+        uint64_t timestamp = 0;
+    };
+
+    struct ZoneEventDebug {
+        int camId = -1;
+        std::string type;
+        float strength = 0.0f;
+        uint64_t timestamp = 0;
+        int zoneIndex = -1;
+        bool hasZoneIndex = false;
+    };
+
     void loadSettings();
     void processOscMessages();
     void pruneVoices(uint64_t now);
@@ -62,11 +79,16 @@ private:
     void sendZoneEvent(const ZoneGestureEvent& event);
     void sendGlobalEvent(const GlobalGestureEvent& event);
     ofxOscSender& getSenderForRoute(const OscRoute& route);
+    void loadGestureConfig();
 
     ofxOscReceiver stateReceiver;
     std::map<std::pair<std::string, int>, std::unique_ptr<ofxOscSender>> gestureSenders;
 
     std::unordered_map<int, VoiceState> voices; // live state for each performer.
+
+    std::unordered_map<int, GestureDebug> lastVoiceGestures; // most recent voice event per id.
+    std::vector<ZoneEventDebug> recentZoneEvents;            // rolling zone event tape.
+    std::vector<GestureDebug> recentGlobalEvents;            // crowd-wide eruptions/stillness pings.
 
     GestureHistory gestureHistory;             // per-voice motion breadcrumbs.
     VoiceGestureDetector voiceDetector;        // per-voice gesture logic.
