@@ -32,6 +32,9 @@ public:
     void update(float globalMotion, int activeVoices, uint64_t timestampMs, std::vector<GlobalGestureEvent>& outEvents);
     void reset();
 
+    uint64_t getLastEruptionTimestamp() const { return lastEruption; }
+    uint64_t getLastStillnessTimestamp() const { return lastStillness; }
+
 private:
     struct Sample {
         uint64_t timestamp = 0;

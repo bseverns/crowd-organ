@@ -48,6 +48,11 @@ public:
     void updateVoice(int voiceId, const std::deque<GestureHistory::Sample>& samples, std::vector<VoiceGestureEvent>& outEvents);
     void removeVoice(int voiceId);
 
+    /// Expose cooldown bookkeeping for on-screen debugging overlays.
+    const std::unordered_map<int, std::unordered_map<std::string, uint64_t>>& getLastTriggerTimes() const {
+        return lastTriggerTimes;
+    }
+
 private:
     bool canTrigger(int voiceId, const std::string& type, uint64_t timestamp, uint64_t cooldownMs);
     void rememberTrigger(int voiceId, const std::string& type, uint64_t timestamp);

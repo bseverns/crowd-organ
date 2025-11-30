@@ -34,12 +34,16 @@ public:
     void updateCamera(int camId, const std::array<float, 16>& zones, uint64_t timestampMs, std::vector<ZoneGestureEvent>& outEvents);
     void removeCamera(int camId);
 
-private:
     struct ZoneSample {
         uint64_t timestamp = 0;
         std::array<float, 16> values{};
     };
 
+    const std::unordered_map<int, std::deque<ZoneSample>>& getHistories() const { return histories; }
+
+    const std::unordered_map<int, std::unordered_map<std::string, uint64_t>>& getLastTriggerTimes() const { return lastTriggerTimes; }
+
+private:
     struct PulseTracker {
         bool initialized = false;
         float prevValue = 0.0f;

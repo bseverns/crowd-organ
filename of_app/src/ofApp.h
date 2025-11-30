@@ -9,6 +9,7 @@
 #include "ZoneGestureDetector.h"
 
 #include <unordered_map>
+#include <vector>
 
 /**
  * ofApp is the conductor glue that ties together OSC I/O, gesture detection,
@@ -40,6 +41,21 @@ private:
         bool enableSending = true;
     } settings;
 
+    struct GestureDebug {
+        std::string type;
+        float strength = 0.0f;
+        uint64_t timestamp = 0;
+    };
+
+    struct ZoneEventDebug {
+        int camId = -1;
+        std::string type;
+        float strength = 0.0f;
+        uint64_t timestamp = 0;
+        int zoneIndex = -1;
+        bool hasZoneIndex = false;
+    };
+
     void loadSettings();
     void processOscMessages();
     void pruneVoices(uint64_t now);
@@ -53,6 +69,10 @@ private:
     ofxOscSender gestureSender;
 
     std::unordered_map<int, VoiceState> voices; // live state for each performer.
+
+    std::unordered_map<int, GestureDebug> lastVoiceGestures; // most recent voice event per id.
+    std::vector<ZoneEventDebug> recentZoneEvents;            // rolling zone event tape.
+    std::vector<GestureDebug> recentGlobalEvents;            // crowd-wide eruptions/stillness pings.
 
     GestureHistory gestureHistory;             // per-voice motion breadcrumbs.
     VoiceGestureDetector voiceDetector;        // per-voice gesture logic.
