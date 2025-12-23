@@ -9,7 +9,7 @@ The sound engine is a lab journal disguised as a gig checklist. Fire it up, stre
 4. Keep [`docs/OSC_SCHEMA.md`](../docs/OSC_SCHEMA.md) nearby; it documents the OSC payloads this patch responds to.
 
 ## OSC addresses + ports it listens to
-- **Port**: whatever `NetAddr.langPort` reports (default **57120** in a stock SC install). Aim your sender there.
+- **Port**: whatever `NetAddr.langPort` reports (default **57120** in a stock SC install). Aim your sender there; adjust the host machine IP in your tracker if SC lives elsewhere.
 - `/room/voice/active` — `voiceId, active(0|1)` spins up or releases a `\crowdPipe` synth per voice.
 - `/room/voice/state` — `voiceId, x, y, z, size, motion, energy`; updates panning and energy math.
 - `/room/voice/note` — `voiceId, note (MIDI), velocity`; sets frequency, base amp, opens the envelope, and pins velocity for downstream gesture math.
@@ -36,5 +36,5 @@ The sound engine is a lab journal disguised as a gig checklist. Fire it up, stre
 - Is the SC server running? `s.running` should be `true` and the post window should show SynthDefs compiling cleanly.
 - Are OSC messages hitting the SC language port (default **57120**)? Send a test packet or print `NetAddr.langPort`.
 - Did you activate any voices? `/room/voice/active, <id>, 1` or `/room/voice/note` wakes up a synth.
-- Is the Processing dashboard also running? Make sure audio-control packets are aimed at the SC port, not the dashboard’s **9000** listener.
+- Is the Processing dashboard also running? Make sure audio-control packets are aimed at the SC port, not the dashboard’s **9000** listener. If you prefer splitting gesture vs. state feeds, double-check the ports in `gesture_settings.json` against the address list above.
 - If messages look off, compare against [`docs/OSC_SCHEMA.md`](../docs/OSC_SCHEMA.md); wrong shapes = ignored events.
