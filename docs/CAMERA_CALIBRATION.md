@@ -134,10 +134,46 @@ Once you like how a particular room feels:
   - The zone-to-parameter tables,
   - Any threshold/grid size changes you made in the host app.
 
-You can either:
+The host reads `of_app/bin/data/room_calibration.json` at startup by default.
+Set `room_calibration_file` in `gesture_settings.json` to use a named profile
+such as `rooms/main_hall.json`; the path must stay under `bin/data/`. Press `r`
+in the host window to reload room calibration and gesture tuning while the app
+is running. Press `c` to save the current calibration snapshot back to the
+selected calibration file.
 
-- Commit those as code changes in a branch (e.g. `crowd-organ-lab-2025`), or
-- Keep them as JSON/YAML in `config/` and have the host read them at startup.
+Example:
+
+```json
+{
+  "room_name": "chapel-east",
+  "notes": "Kinect on balcony rail; cams facing north/south aisles.",
+  "kinect": {
+    "min_depth_mm": 700,
+    "max_depth_mm": 4000,
+    "min_blob_area": 1200,
+    "max_blob_area": 90000,
+    "max_voices": 8,
+    "voice_match_distance": 0.35
+  },
+  "cameras": [
+    {
+      "id": 0,
+      "label": "left aisle",
+      "grid": { "cols": 4, "rows": 4 },
+      "ignored_zones": [0, 1],
+      "zone_labels": {
+        "3": "door",
+        "12": "pedal",
+        "15": "delay"
+      }
+    }
+  ]
+}
+```
+
+`ignored_zones` are forced to zero before gesture detection, telemetry output,
+and global motion aggregation. `zone_labels` show up in the host HUD so the
+operator can verify that camera cells still correspond to the room notes.
 
 The point is that "the corner that swells the drone" stays the same from night to night,
 which makes the Crowd Organ feel like an instrument with a memory.

@@ -14,10 +14,15 @@ Default destinations:
 Default routing from the host (unless you override in `gesture_settings.json`):
 
 - Voice state → `127.0.0.1:9000` at `/room/voice/state`
+- Voice active → `127.0.0.1:9000` at `/room/voice/active`
+- Voice note → `127.0.0.1:9000` at `/room/voice/note`
+- Global motion → `127.0.0.1:9000` at `/room/global/motion`
+- Camera zones → `127.0.0.1:9000` at `/room/camera/zones`
 - Gesture streams (voice/zone/global) → `127.0.0.1:9001` at `/room/gesture/*`
 
-`gesture_host`/`gesture_port` are convenience knobs for pointing every gesture stream at the same box; use `routes.voice_state`
-if you also need to move the continuous state feed.
+`gesture_host`/`gesture_port` are convenience knobs for pointing every gesture stream at the same box; use
+`routes.voice_state`, `routes.voice_active`, `routes.voice_note`, `routes.global_motion`, and `routes.camera_zones`
+to move the continuous telemetry feed.
 
 You can add or remove OSC outputs in the host app as needed. Every logical event has a configurable address/host/port trio in
 `gesture_settings.json` under the `routes` key. Address strings support a few simple substitutions if you want to bake IDs into
@@ -160,12 +165,41 @@ Room-wide state flips derived from aggregate motion.
 Treat these as registration or scene toggles: `eruption` fires when global motion spikes from
 quiet to loud; `stillness` lands when lots of people are present but chill.
 
-## Extensions
+## Host control messages
 
-You can extend the schema with, for instance:
+These are optional operator/control messages sent to the host's `listen_port`.
+They are useful from a dashboard, OSC console, or show-control tool.
 
-- `/room/global/reset` — command to clear all voices and motion buffers.
-- `/room/config/*` — configuration or calibration messages (e.g., adjusting thresholds, grid
-  sizes, or mapping ranges from a GUI).
+### `/room/config/reload`
+
+Reload room calibration and gesture tuning from disk.
+
+- Address: `/room/config/reload`
+- Args: none
+
+### `/room/config/sending`
+
+Toggle host OSC output without stopping capture or detection.
+
+- Address: `/room/config/sending`
+- Args:
+  1. `int32` — `enabled` (`1` = send, `0` = mute)
+
+### `/room/config/sensors`
+
+Toggle Kinect/webcam capture. OSC replay/bridge input can remain enabled
+separately via `enable_osc_input`.
+
+- Address: `/room/config/sensors`
+- Args:
+  1. `int32` — `enabled` (`1` = capture, `0` = stop updating sensors)
+
+### `/room/global/reset`
+
+Clear voice, zone, global gesture, and debug state. Active voices emit
+`/room/voice/active voiceId 0` before they are removed when sending is enabled.
+
+- Address: `/room/global/reset`
+- Args: none
 
 Keep everything under `/room/...` to avoid collisions.

@@ -30,7 +30,9 @@ CrowdOrganHost (openFrameworks)
 
 Responsibilities:
 
-- Initialize Kinect + webcams.
+- Initialize Kinect + webcams. This remains the intended production path for
+  `of_app/`; the current OSC-fed telemetry path is a bridge/test input, not a
+  replacement for in-app sensing.
 - Grab frames each update.
 - From Kinect depth:
   - Downsample and threshold to a foreground range (e.g., 1–4 m).
@@ -52,6 +54,14 @@ Responsibilities:
   - pitch, velocity,
   - pan, brightness, and other continuous controls.
 - Maintain short motion histories per voice/zone and run the gesture detectors.
+- Accept canonical normalized telemetry over OSC during development/replay:
+  - `/room/voice/state`,
+  - `/room/camera/zones`,
+  - `/room/global/motion`.
+  This feeds the same internal feature path as the sensor pipeline so replay
+  tests and live hardware exercise the same gesture code.
+- Live OSC captures can be recorded with `tools/record_osc_fixture.py` and then
+  promoted into replay fixtures once expectation rows are added.
 - Emit OSC messages with:
   - per-voice state (`/room/voice/state`, `/room/voice/note`, `/room/voice/active`),
   - gesture events (`/room/gesture/voice`, `/room/gesture/zone`, `/room/gesture/global`),
@@ -65,6 +75,10 @@ Responsibilities:
 - Listen for OSC messages on a configured port.
 - Maintain a simple `Voice` structure mirroring the OSC schema.
 - Maintain per-camera motion grids, a global motion value, and the rolling gesture log.
+- Read room calibration when available so camera labels, zone labels, and
+  ignored zones match the host view.
+- Send lightweight host-control OSC messages for reload, mute, sensor toggle,
+  and reset during setup or rehearsal.
 - Visualize:
   - active vs. inactive pipes/voices,
   - their positions and sizes,

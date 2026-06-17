@@ -3,15 +3,54 @@
     "Default routing cribbed straight from README: drop this next to the host binary and hit go.",
     "Tweak gesture_host/gesture_port to punt every gesture stream at another box; leave them as-is to target localhost.",
     "Override individual routes.* host/port/address if you want bespoke wiring; omit keys to keep the baked-in defaults.",
+    "enable_sensors keeps Kinect/webcam capture inside of_app; enable_osc_input leaves the replay/bridge inlet available.",
+    "room_calibration_file can point at another relative .json file under bin/data, such as rooms/main_hall.json.",
     "Leave fields untouched and you can run the host immediately without hand-rolling a config—this file already matches the defaults."
   ],
   "listen_port": 9001,
   "gesture_host": "127.0.0.1",
   "gesture_port": 9000,
   "enable_sending": true,
+  "enable_osc_input": true,
+  "enable_sensors": true,
+  "room_calibration_file": "room_calibration.json",
+  "sensors": {
+    "kinect_min_depth_mm": 700,
+    "kinect_max_depth_mm": 4000,
+    "max_kinect_voices": 8,
+    "min_blob_area": 1200,
+    "max_blob_area": 90000,
+    "voice_match_distance": 0.35,
+    "camera_width": 640,
+    "camera_height": 480,
+    "cam_grid_cols": 4,
+    "cam_grid_rows": 4,
+    "camera_motion_floor": 0.02,
+    "camera_smoothing": 0.65
+  },
   "routes": {
     "voice_state": {
       "address": "/room/voice/state",
+      "host": "127.0.0.1",
+      "port": 9000
+    },
+    "voice_active": {
+      "address": "/room/voice/active",
+      "host": "127.0.0.1",
+      "port": 9000
+    },
+    "voice_note": {
+      "address": "/room/voice/note",
+      "host": "127.0.0.1",
+      "port": 9000
+    },
+    "global_motion": {
+      "address": "/room/global/motion",
+      "host": "127.0.0.1",
+      "port": 9000
+    },
+    "camera_zones": {
+      "address": "/room/camera/zones",
       "host": "127.0.0.1",
       "port": 9000
     },

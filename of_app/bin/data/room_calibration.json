@@ -1,0 +1,49 @@
+{
+  "_readme": [
+    "Room-specific sensor calibration. Press r in CrowdOrganHost to reload labels/ignored zones and gesture tuning.",
+    "Press c in CrowdOrganHost to save the current calibration snapshot back to this file.",
+    "Camera grids use row-major zone indexes: index = row * cols + col."
+  ],
+  "room_name": "default-room",
+  "notes": "Replace labels and ignored zones after walking the room.",
+  "kinect": {
+    "min_depth_mm": 700,
+    "max_depth_mm": 4000,
+    "min_blob_area": 1200,
+    "max_blob_area": 90000,
+    "max_voices": 8,
+    "voice_match_distance": 0.35
+  },
+  "cameras": [
+    {
+      "id": 0,
+      "label": "left camera",
+      "grid": {
+        "cols": 4,
+        "rows": 4
+      },
+      "ignored_zones": [],
+      "zone_labels": {
+        "0": "up left",
+        "3": "up right",
+        "12": "low left",
+        "15": "low right"
+      }
+    },
+    {
+      "id": 1,
+      "label": "right camera",
+      "grid": {
+        "cols": 4,
+        "rows": 4
+      },
+      "ignored_zones": [],
+      "zone_labels": {
+        "0": "up left",
+        "3": "up right",
+        "12": "low left",
+        "15": "low right"
+      }
+    }
+  ]
+}

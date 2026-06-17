@@ -1,0 +1,32 @@
+# Crowd Organ replay fixture v1
+#
+# Event rows:
+#   <time_ms> <osc_address> <args...>
+#
+# Supported addresses in the lightweight replay harness:
+#   /room/voice/state voiceId x y z size motion energy
+#   /room/voice/disconnect voiceId
+#   /room/camera/zones camId cols rows zone0 zone1 ...
+#   /room/global/motion globalMotion
+#
+# Expectation rows:
+#   expect voice <voiceId> <gestureType>
+#   expect zone <camId> <gestureType>
+#   expect global <gestureType>
+
+expect voice 1 raise
+expect zone 0 sweep_lr_top
+expect global stillness
+
+0 /room/voice/state 1 0.00 0.50 0.20 0.20 0.05 0.20
+0 /room/voice/state 2 -0.40 0.55 0.25 0.20 0.03 0.20
+0 /room/voice/state 3 0.45 0.52 0.25 0.20 0.03 0.20
+250 /room/voice/state 1 0.00 0.40 0.20 0.22 0.06 0.22
+600 /room/voice/state 1 0.00 0.20 0.20 0.24 0.07 0.24
+
+0 /room/camera/zones 0 4 2 1.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0
+300 /room/camera/zones 0 4 2 0.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0
+600 /room/camera/zones 0 4 2 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0
+
+1000 /room/global/motion 0.04
+7200 /room/global/motion 0.04

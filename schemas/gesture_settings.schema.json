@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://crowd-organ.local/schemas/gesture_settings.schema.json",
+  "title": "Crowd Organ gesture_settings.json",
+  "type": "object",
+  "properties": {
+    "_readme": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "listen_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "gesture_host": { "type": "string", "minLength": 1 },
+    "gesture_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "enable_sending": { "type": "boolean" },
+    "enable_osc_input": { "type": "boolean" },
+    "enable_sensors": { "type": "boolean" },
+    "room_calibration_file": {
+      "type": "string",
+      "minLength": 6,
+      "pattern": "^(?!/)(?!.*\\.\\.)(?!.*\\\\).+\\.json$"
+    },
+    "sensors": {
+      "type": "object",
+      "properties": {
+        "kinect_min_depth_mm": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "kinect_max_depth_mm": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "max_kinect_voices": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "min_blob_area": { "type": "integer", "minimum": 1, "maximum": 500000 },
+        "max_blob_area": { "type": "integer", "minimum": 1, "maximum": 2000000 },
+        "voice_match_distance": { "type": "number", "minimum": 0.01, "maximum": 2.0 },
+        "camera_width": { "type": "integer", "minimum": 160, "maximum": 1920 },
+        "camera_height": { "type": "integer", "minimum": 160, "maximum": 1920 },
+        "cam_grid_cols": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "cam_grid_rows": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "camera_motion_floor": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "camera_smoothing": { "type": "number", "minimum": 0.0, "maximum": 0.99 }
+      }
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/route" }
+    }
+  },
+  "required": ["listen_port", "gesture_host", "gesture_port", "enable_sending", "routes"],
+  "$defs": {
+    "route": {
+      "type": "object",
+      "properties": {
+        "address": { "type": "string", "pattern": "^/" },
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      },
+      "required": ["address", "host", "port"]
+    }
+  }
+}

@@ -28,6 +28,24 @@ This repo contains:
 Any synthesis engine (SuperCollider, Pd, Max, DAW via OSC→MIDI bridge) can
 listen to the OSC stream and treat the crowd and space as an organ console.
 
+## Implementation status
+
+`of_app/` is the canonical home for the full Kinect/webcam host. The current
+checked-in host already owns the OSC routing, gesture detectors, tuning reloads,
+diagnostic HUD, Kinect depth blob extraction, webcam motion grids, and telemetry
+emission. Its incoming `/room/voice/state`, `/room/camera/zones`, and
+`/room/global/motion` receiver is still available as a bridge/test input that
+feeds the same normalized feature path as live sensors.
+
+Near-term hardening work is tracking that direction:
+
+- keep `/room/camera/zones` canonical as `camId, cols, rows, zone...`;
+- reject malformed or out-of-range OSC/config input before it mutates state;
+- keep detector, replay, config-validation, and capture fixtures green before
+  changing gesture logic further;
+- refine the first-pass sensor pipeline with better voice tracking and richer
+  per-room calibration workflows.
+
 ## Quickstart (grab-and-go)
 
 If you want to be playing noise tonight, start here. We keep the ritual
@@ -71,9 +89,45 @@ Drop a config file next to the host binary (openFrameworks reads from `bin/data/
   "gesture_host": "127.0.0.1",
   "gesture_port": 9000,
   "enable_sending": true,
+  "enable_osc_input": true,
+  "enable_sensors": true,
+  "sensors": {
+    "kinect_min_depth_mm": 700,
+    "kinect_max_depth_mm": 4000,
+    "max_kinect_voices": 8,
+    "min_blob_area": 1200,
+    "max_blob_area": 90000,
+    "voice_match_distance": 0.35,
+    "camera_width": 640,
+    "camera_height": 480,
+    "cam_grid_cols": 4,
+    "cam_grid_rows": 4,
+    "camera_motion_floor": 0.02,
+    "camera_smoothing": 0.65
+  },
   "routes": {
     "voice_state": {
       "address": "/room/voice/state",
+      "host": "127.0.0.1",
+      "port": 9000
+    },
+    "voice_active": {
+      "address": "/room/voice/active",
+      "host": "127.0.0.1",
+      "port": 9000
+    },
+    "voice_note": {
+      "address": "/room/voice/note",
+      "host": "127.0.0.1",
+      "port": 9000
+    },
+    "global_motion": {
+      "address": "/room/global/motion",
+      "host": "127.0.0.1",
+      "port": 9000
+    },
+    "camera_zones": {
+      "address": "/room/camera/zones",
       "host": "127.0.0.1",
       "port": 9000
     },
@@ -99,6 +153,10 @@ Drop a config file next to the host binary (openFrameworks reads from `bin/data/
 - `listen_port`: where the host listens for incoming OSC (e.g., from calibration tools).
 - `gesture_host` / `gesture_port`: legacy knobs that prefill all *gesture* routes (voice, zone, global). Voice state keeps its dashboard-friendly default of `127.0.0.1:9000` unless you override `routes.voice_state`.
 - `enable_sending`: flip off if you want to run headless without emitting OSC.
+- `enable_sensors`: turns the in-app Kinect/webcam capture path on or off.
+- `enable_osc_input`: keeps the replay/bridge OSC inlet available for testing without hardware.
+- `room_calibration_file`: relative `.json` path under `bin/data/` for named room profiles.
+- `sensors`: Kinect depth thresholds, blob sizing, webcam resolution, grid size, and motion smoothing.
 - `routes`: per-logical-event overrides if you want, for example, `/voice/{id}/gesture` on a synth box while `/zone/{id}/enter` goes to a lighting desk.
 
 If the file is missing, the host logs a warning and falls back to built-in defaults, so touring rigs can live dangerously.
@@ -117,6 +175,23 @@ If the file is missing, the host logs a warning and falls back to built-in defau
 ```
 
 Leave any field out to keep the current value—this is a playground, not a contract.
+
+### Room calibration: `room_calibration.json`
+
+`of_app/bin/data/room_calibration.json` carries room-specific sensor settings:
+Kinect depth/blob thresholds, camera grid dimensions, camera labels, ignored
+zones, and zone labels. Press `r` in the host window to reload calibration and
+gesture tuning; press `c` to save the current calibration snapshot.
+
+Ignored zones are forced to zero before gesture detection, telemetry output, and
+global motion aggregation, so they are useful for masking doorways, projector
+flicker, or dead camera regions.
+
+The Processing dashboard reads the same calibration from
+the host's selected `room_calibration_file` when launched from the repo layout,
+or from `processing_dashboard/data/room_calibration.json` if you want a
+dashboard-local override. Camera labels, zone labels, and ignored-zone markings
+then appear in the monitor view.
 
 ### Run steps (host → dashboard → synth)
 
@@ -151,6 +226,19 @@ Before a show, make sure the pipeline speaks. With the host running:
 2. Confirm the dashboard flashes a ghost voice and SuperCollider logs the message. If either side is silent, re-check ports from `gesture_settings.json`.
 
 For deeper OSC spelunking, see `docs/OSC_SCHEMA.md`.
+
+### Preflight check
+
+Run the repo/environment preflight before hardware setup:
+
+```bash
+python3 tools/preflight.py --run-tests --build-dashboard
+```
+
+It validates config/profile JSON, checks the selected calibration file, reports
+whether the local openFrameworks makefile path is usable, checks the Processing
+CLI wrapper, looks for stray platform artifacts, and optionally runs the
+lightweight detector/replay tests plus a dashboard compile check.
 
 ## Hardware
 
@@ -232,9 +320,11 @@ is your north star.
 
 ## Next steps
 
-- Refine clustering and voice assignment logic (e.g., more robust blob tracking).
+- Validate the full host with a real openFrameworks install, Kinect, and webcams.
+- Capture real room OSC sessions with `tools/record_osc_fixture.py`, then commit
+  the useful fixtures with expectation rows.
+- Keep refining Kinect blob tracking against those real-room captures.
 - Tune the musical mapping (notes, CCs, timbre indices) in `docs/OSC_SCHEMA.md`.
 - Use `docs/CAMERA_CALIBRATION.md` to decide what different room zones mean musically.
-- Add per-room configuration if you plan to move installations.
 
 MIT licensed; see `LICENSE`.

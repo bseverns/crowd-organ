@@ -4,13 +4,102 @@
 #include "ofLog.h"
 #include "ofxJSON.h"
 
+#include <algorithm>
+#include <cmath>
+#include <exception>
+#include <fstream>
 #include <optional>
 #include <sstream>
 #include <vector>
 
 namespace {
+constexpr int kMinOscPort = 1;
+constexpr int kMaxOscPort = 65535;
+constexpr int kMaxVoiceId = 63;
+constexpr int kMaxCameraId = 15;
+constexpr int kMaxGridRows = 16;
+constexpr int kMaxGridCols = 16;
+constexpr int kMaxZoneValues = kMaxGridRows * kMaxGridCols;
+constexpr int kMaxOscMessagesPerFrame = 512;
+constexpr int kMinCameraDimension = 160;
+constexpr int kMaxCameraDimension = 1920;
+
 uint64_t nowMillis() {
     return static_cast<uint64_t>(ofGetElapsedTimeMillis());
+}
+
+bool isValidOscAddress(const std::string& address) {
+    return !address.empty() && address.front() == '/';
+}
+
+bool isValidHost(const std::string& host) {
+    return !host.empty();
+}
+
+bool isSafeDataRelativeJsonPath(const std::string& path) {
+    if (path.empty() || path.front() == '/' || path.find('\\') != std::string::npos) {
+        return false;
+    }
+    if (path.find("..") != std::string::npos) {
+        return false;
+    }
+    return path.size() > 5 && path.substr(path.size() - 5) == ".json";
+}
+
+int clampInt(int value, int minValue, int maxValue) {
+    return std::max(minValue, std::min(value, maxValue));
+}
+
+float clampFloat(float value, float minValue, float maxValue) {
+    if (!std::isfinite(value)) {
+        return minValue;
+    }
+    return std::max(minValue, std::min(value, maxValue));
+}
+
+uint64_t clampUInt64(uint64_t value, uint64_t minValue, uint64_t maxValue) {
+    return std::max(minValue, std::min(value, maxValue));
+}
+
+int readJsonInt(const ofJson& json, const std::string& key, int current, int minValue, int maxValue) {
+    if (!json.contains(key)) {
+        return current;
+    }
+    const auto& node = json[key];
+    if (!node.is_number_integer()) {
+        ofLogWarning("settings") << key << " must be an integer; keeping " << current;
+        return current;
+    }
+    int value = node.get<int>();
+    int clamped = clampInt(value, minValue, maxValue);
+    if (value != clamped) {
+        ofLogWarning("settings") << key << " out of range (" << value << "); clamped to " << clamped;
+    }
+    return clamped;
+}
+
+bool readJsonBool(const ofJson& json, const std::string& key, bool current) {
+    if (!json.contains(key)) {
+        return current;
+    }
+    const auto& node = json[key];
+    if (!node.is_boolean()) {
+        ofLogWarning("settings") << key << " must be a boolean; keeping " << (current ? "true" : "false");
+        return current;
+    }
+    return node.get<bool>();
+}
+
+std::string readJsonString(const ofJson& json, const std::string& key, const std::string& current) {
+    if (!json.contains(key)) {
+        return current;
+    }
+    const auto& node = json[key];
+    if (!node.is_string()) {
+        ofLogWarning("settings") << key << " must be a string; keeping " << current;
+        return current;
+    }
+    return node.get<std::string>();
 }
 
 std::string formatAddress(std::string pattern, std::optional<int> voiceId = std::nullopt,
@@ -49,12 +138,21 @@ void ofApp::setup() {
     ofSetVerticalSync(true);
 
     loadSettings();
+    loadRoomCalibration();
     loadGestureConfig();
+    setupSensors();
 
     // One receiver for the raw crowd telemetry, one sender for our gestures.
-    stateReceiver.setup(settings.listenPort);
+    if (settings.enableOscInput) {
+        stateReceiver.setup(settings.listenPort);
+    }
     if (settings.enableSending) {
         // Warm up senders for each configured route so failures are loud during boot.
+        getSenderForRoute(settings.voiceStateRoute);
+        getSenderForRoute(settings.voiceActiveRoute);
+        getSenderForRoute(settings.voiceNoteRoute);
+        getSenderForRoute(settings.globalMotionRoute);
+        getSenderForRoute(settings.cameraZonesRoute);
         getSenderForRoute(settings.voiceGestureRoute);
         getSenderForRoute(settings.zoneGestureRoute);
         getSenderForRoute(settings.globalGestureRoute);
@@ -63,13 +161,16 @@ void ofApp::setup() {
     // Let configs tune how far back we remember per-voice history.
     gestureHistory.setCapacity(voiceHistoryCapacity);
 
-    ofLogNotice() << "CrowdOrganHost listening for motion on port " << settings.listenPort
-                  << ", emitting gestures to configured routes (see gesture_settings.json).";
+    ofLogNotice() << "CrowdOrganHost "
+                  << (settings.enableOscInput ? "listening for replay/bridge motion on port " + ofToString(settings.listenPort) : "OSC input disabled")
+                  << ", sensors " << (settings.enableSensors ? "enabled" : "disabled")
+                  << ", emitting to configured routes (see gesture_settings.json).";
 }
 
 void ofApp::update() {
     uint64_t now = nowMillis();
-    processOscMessages();      // grab fresh motion samples
+    updateSensors(now);        // production Kinect/webcam feature source
+    processOscMessages();      // optional replay/bridge samples
     pruneVoices(now);          // toss stale performers so cooldowns reset
     updateVoiceGestures();     // per-voice raise/swipe/etc.
     updateGlobalGestures(now); // crowd-wide eruption/stillness
@@ -89,12 +190,26 @@ void ofApp::draw() {
         float y = ofMap(position.y, -1.0f, 1.0f, stageRect.getBottom(), stageRect.getTop(), true);
         return glm::vec2(x, y);
     };
+    auto ageLabel = [&](uint64_t timestamp) {
+        if (timestamp == 0) {
+            return std::string("never");
+        }
+        return ofToString(now > timestamp ? now - timestamp : 0) + "ms ago";
+    };
 
     // Header / summary panel.
     std::stringstream ss;
-    ss << "Crowd Organ Host – gesture pilot" << std::endl;
+    ss << "Crowd Organ Host – full host pilot" << std::endl;
+    ss << "room: " << roomCalibration.roomName << std::endl;
     ss << "voices tracked: " << voices.size() << std::endl;
     ss << "global motion: " << ofToString(lastGlobalMotion, 2) << std::endl;
+    ss << "sources: sensors " << (settings.enableSensors ? (kinectReady ? "kinect" : "waiting") : "off")
+       << " / osc " << (settings.enableOscInput ? "on" : "off") << std::endl;
+    ss << "health: sensor " << ageLabel(lastSensorInputTimestamp)
+       << " · osc " << ageLabel(lastOscInputTimestamp)
+       << " · telemetry " << ageLabel(lastTelemetrySendTimestamp)
+       << " · backlog warnings " << oscBacklogWarnings << std::endl;
+    ss << "calibration: ignored zones " << countIgnoredZones() << std::endl;
     ss << "gesture out: " << settings.voiceGestureRoute.host << ":" << settings.voiceGestureRoute.port
        << " (voice path " << settings.voiceGestureRoute.address << ")" << std::endl;
     ss << "            " << settings.zoneGestureRoute.host << ":" << settings.zoneGestureRoute.port << " (zone path "
@@ -241,20 +356,38 @@ void ofApp::draw() {
         ofPopStyle();
 
         const auto& sample = history.back();
-        for (int row = 0; row < 4; ++row) {
-            for (int col = 0; col < 4; ++col) {
-                int idx = row * 4 + col;
+        int rows = std::max(1, sample.rows);
+        int cols = std::max(1, sample.cols);
+        for (int row = 0; row < rows; ++row) {
+            for (int col = 0; col < cols; ++col) {
+                int idx = row * cols + col;
+                if (idx >= static_cast<int>(sample.values.size())) {
+                    continue;
+                }
                 float value = ofClamp(sample.values[idx], 0.0f, 1.0f);
                 ofColor cellColor;
                 cellColor.setHsb(static_cast<uint8_t>(ofMap(value, 0.0f, 1.0f, 160, 12)), 200, ofMap(value, 0.0f, 1.0f, 60, 255));
-                ofRectangle cellRect(mapRect.getLeft() + col * (mapRect.getWidth() / 4.0f),
-                                     mapRect.getTop() + row * (mapRect.getHeight() / 4.0f),
-                                     mapRect.getWidth() / 4.0f,
-                                     mapRect.getHeight() / 4.0f);
+                ofRectangle cellRect(mapRect.getLeft() + col * (mapRect.getWidth() / static_cast<float>(cols)),
+                                     mapRect.getTop() + row * (mapRect.getHeight() / static_cast<float>(rows)),
+                                     mapRect.getWidth() / static_cast<float>(cols),
+                                     mapRect.getHeight() / static_cast<float>(rows));
                 ofPushStyle();
                 ofSetColor(cellColor);
                 ofDrawRectangle(cellRect);
+                if (isZoneIgnored(camId, idx)) {
+                    ofSetColor(0, 180);
+                    ofDrawRectangle(cellRect);
+                    ofSetColor(255, 80, 80, 220);
+                    ofDrawLine(cellRect.getTopLeft(), cellRect.getBottomRight());
+                    ofDrawLine(cellRect.getTopRight(), cellRect.getBottomLeft());
+                }
                 ofPopStyle();
+
+                std::string zoneLabel = getZoneLabel(camId, idx);
+                if (!zoneLabel.empty()) {
+                    ofDrawBitmapStringHighlight(zoneLabel, cellRect.getLeft() + 4.0f, cellRect.getTop() + 14.0f,
+                                                ofColor(0, 0, 0, 120), ofColor::white);
+                }
             }
         }
 
@@ -265,7 +398,12 @@ void ofApp::draw() {
         ofPopStyle();
 
         std::stringstream mapLabel;
-        mapLabel << "cam " << camId << " · last zone frame " << (now > sample.timestamp ? now - sample.timestamp : 0) << "ms ago";
+        mapLabel << "cam " << camId;
+        std::string cameraLabel = getCameraLabel(camId);
+        if (!cameraLabel.empty()) {
+            mapLabel << " · " << cameraLabel;
+        }
+        mapLabel << " · last zone frame " << (now > sample.timestamp ? now - sample.timestamp : 0) << "ms ago";
         ofDrawBitmapStringHighlight(mapLabel.str(), mapRect.getLeft() + 6.0f, mapRect.getTop() + 16.0f, ofColor(0, 0, 0, 150), ofColor::white);
 
         auto cooldownIt = zoneCooldowns.find(camId);
@@ -331,12 +469,25 @@ void ofApp::draw() {
 }
 
 void ofApp::exit() {
+    if (kinectReady) {
+        kinect.close();
+        kinectReady = false;
+    }
+    for (auto& source : cameraSources) {
+        if (source.ready) {
+            source.grabber.close();
+            source.ready = false;
+        }
+    }
     ofLogNotice() << "CrowdOrganHost shutting down.";
 }
 
 void ofApp::keyPressed(int key) {
     if (key == 'r' || key == 'R') {
+        loadRoomCalibration();
         loadGestureConfig();
+    } else if (key == 'c' || key == 'C') {
+        saveRoomCalibration();
     }
 }
 
@@ -351,18 +502,57 @@ void ofApp::loadSettings() {
         return;
     }
 
-    auto json = ofLoadJson(settingsPath);
-    if (json.contains("listen_port")) {
-        settings.listenPort = json["listen_port"].get<int>();
+    ofJson json;
+    try {
+        json = ofLoadJson(settingsPath);
+    } catch (const std::exception& e) {
+        ofLogError("settings") << "failed to parse gesture_settings.json: " << e.what() << "; using defaults";
+        return;
     }
-    if (json.contains("gesture_host")) {
-        settings.gestureHost = json["gesture_host"].get<std::string>();
+
+    settings.listenPort = readJsonInt(json, "listen_port", settings.listenPort, kMinOscPort, kMaxOscPort);
+    settings.gestureHost = readJsonString(json, "gesture_host", settings.gestureHost);
+    if (!isValidHost(settings.gestureHost)) {
+        ofLogWarning("settings") << "gesture_host is empty; keeping 127.0.0.1";
+        settings.gestureHost = "127.0.0.1";
     }
-    if (json.contains("gesture_port")) {
-        settings.gesturePort = json["gesture_port"].get<int>();
+    settings.gesturePort = readJsonInt(json, "gesture_port", settings.gesturePort, kMinOscPort, kMaxOscPort);
+    settings.enableSending = readJsonBool(json, "enable_sending", settings.enableSending);
+    settings.enableOscInput = readJsonBool(json, "enable_osc_input", settings.enableOscInput);
+    settings.enableSensors = readJsonBool(json, "enable_sensors", settings.enableSensors);
+    std::string calibrationFile = readJsonString(json, "room_calibration_file", settings.roomCalibrationFile);
+    if (isSafeDataRelativeJsonPath(calibrationFile)) {
+        settings.roomCalibrationFile = calibrationFile;
+    } else {
+        ofLogWarning("settings") << "room_calibration_file must be a relative .json path under bin/data; keeping "
+                                 << settings.roomCalibrationFile;
     }
-    if (json.contains("enable_sending")) {
-        settings.enableSending = json["enable_sending"].get<bool>();
+
+    if (json.contains("sensors")) {
+        const auto& sensors = json["sensors"];
+        if (sensors.is_object()) {
+            sensorSettings.kinectMinDepthMm = readJsonInt(sensors, "kinect_min_depth_mm", sensorSettings.kinectMinDepthMm, 1, 10000);
+            sensorSettings.kinectMaxDepthMm = readJsonInt(sensors, "kinect_max_depth_mm", sensorSettings.kinectMaxDepthMm, sensorSettings.kinectMinDepthMm + 1, 10000);
+            sensorSettings.maxKinectVoices = readJsonInt(sensors, "max_kinect_voices", sensorSettings.maxKinectVoices, 1, kMaxVoiceId + 1);
+            sensorSettings.minBlobArea = readJsonInt(sensors, "min_blob_area", sensorSettings.minBlobArea, 1, 500000);
+            sensorSettings.maxBlobArea = readJsonInt(sensors, "max_blob_area", sensorSettings.maxBlobArea, sensorSettings.minBlobArea + 1, 2000000);
+            sensorSettings.cameraWidth = readJsonInt(sensors, "camera_width", sensorSettings.cameraWidth, kMinCameraDimension, kMaxCameraDimension);
+            sensorSettings.cameraHeight = readJsonInt(sensors, "camera_height", sensorSettings.cameraHeight, kMinCameraDimension, kMaxCameraDimension);
+            sensorSettings.camGridCols = readJsonInt(sensors, "cam_grid_cols", sensorSettings.camGridCols, 1, kMaxGridCols);
+            sensorSettings.camGridRows = readJsonInt(sensors, "cam_grid_rows", sensorSettings.camGridRows, 1, kMaxGridRows);
+
+            if (sensors.contains("voice_match_distance") && sensors["voice_match_distance"].is_number()) {
+                sensorSettings.voiceMatchDistance = clampFloat(sensors["voice_match_distance"].get<float>(), 0.01f, 2.0f);
+            }
+            if (sensors.contains("camera_motion_floor") && sensors["camera_motion_floor"].is_number()) {
+                sensorSettings.cameraMotionFloor = clampFloat(sensors["camera_motion_floor"].get<float>(), 0.0f, 1.0f);
+            }
+            if (sensors.contains("camera_smoothing") && sensors["camera_smoothing"].is_number()) {
+                sensorSettings.cameraSmoothing = clampFloat(sensors["camera_smoothing"].get<float>(), 0.0f, 0.99f);
+            }
+        } else {
+            ofLogWarning("settings") << "sensors must be an object; keeping sensor defaults";
+        }
     }
 
     // Sync legacy host/port values into the gesture routes so folks can quickly
@@ -381,23 +571,45 @@ void ofApp::loadSettings() {
             return;
         }
         const auto& node = routesJson[key];
+        if (!node.is_object()) {
+            ofLogWarning("settings") << "routes." << key << " must be an object; keeping defaults";
+            return;
+        }
         if (node.contains("address")) {
-            route.address = node["address"].get<std::string>();
+            std::string address = readJsonString(node, "address", route.address);
+            if (isValidOscAddress(address)) {
+                route.address = address;
+            } else {
+                ofLogWarning("settings") << "routes." << key << ".address must start with /; keeping " << route.address;
+            }
         }
         if (node.contains("host")) {
-            route.host = node["host"].get<std::string>();
+            std::string host = readJsonString(node, "host", route.host);
+            if (isValidHost(host)) {
+                route.host = host;
+            } else {
+                ofLogWarning("settings") << "routes." << key << ".host is empty; keeping " << route.host;
+            }
         }
         if (node.contains("port")) {
-            route.port = node["port"].get<int>();
+            route.port = readJsonInt(node, "port", route.port, kMinOscPort, kMaxOscPort);
         }
     };
 
     if (json.contains("routes")) {
         const auto& routes = json["routes"];
-        loadRoute(routes, "voice_state", settings.voiceStateRoute);
-        loadRoute(routes, "voice_gesture", settings.voiceGestureRoute);
-        loadRoute(routes, "zone_gesture", settings.zoneGestureRoute);
-        loadRoute(routes, "global_gesture", settings.globalGestureRoute);
+        if (routes.is_object()) {
+            loadRoute(routes, "voice_state", settings.voiceStateRoute);
+            loadRoute(routes, "voice_active", settings.voiceActiveRoute);
+            loadRoute(routes, "voice_note", settings.voiceNoteRoute);
+            loadRoute(routes, "global_motion", settings.globalMotionRoute);
+            loadRoute(routes, "camera_zones", settings.cameraZonesRoute);
+            loadRoute(routes, "voice_gesture", settings.voiceGestureRoute);
+            loadRoute(routes, "zone_gesture", settings.zoneGestureRoute);
+            loadRoute(routes, "global_gesture", settings.globalGestureRoute);
+        } else {
+            ofLogWarning("settings") << "routes must be an object; keeping route defaults";
+        }
     }
 
     ofLogNotice() << "OSC routes resolved:"
@@ -407,6 +619,152 @@ void ofApp::loadSettings() {
                   << settings.zoneGestureRoute.host << ":" << settings.zoneGestureRoute.port << " "
                   << settings.zoneGestureRoute.address << "; global gesture " << settings.globalGestureRoute.host << ":"
                   << settings.globalGestureRoute.port << " " << settings.globalGestureRoute.address;
+}
+
+void ofApp::loadRoomCalibration() {
+    const std::string calibrationPath = ofToDataPath(settings.roomCalibrationFile);
+    if (!ofFile::doesFileExist(calibrationPath)) {
+        ofLogWarning("calibration") << settings.roomCalibrationFile << " not found at " << calibrationPath
+                                    << " – using sensor defaults";
+        return;
+    }
+
+    ofJson json;
+    try {
+        json = ofLoadJson(calibrationPath);
+    } catch (const std::exception& e) {
+        ofLogError("calibration") << "failed to parse " << settings.roomCalibrationFile << ": " << e.what();
+        return;
+    }
+
+    RoomCalibration loaded;
+    loaded.roomName = readJsonString(json, "room_name", roomCalibration.roomName);
+    loaded.notes = readJsonString(json, "notes", roomCalibration.notes);
+
+    if (json.contains("kinect") && json["kinect"].is_object()) {
+        const auto& kinectJson = json["kinect"];
+        sensorSettings.kinectMinDepthMm = readJsonInt(kinectJson, "min_depth_mm", sensorSettings.kinectMinDepthMm, 1, 10000);
+        sensorSettings.kinectMaxDepthMm = readJsonInt(kinectJson, "max_depth_mm", sensorSettings.kinectMaxDepthMm, sensorSettings.kinectMinDepthMm + 1, 10000);
+        sensorSettings.minBlobArea = readJsonInt(kinectJson, "min_blob_area", sensorSettings.minBlobArea, 1, 500000);
+        sensorSettings.maxBlobArea = readJsonInt(kinectJson, "max_blob_area", sensorSettings.maxBlobArea, sensorSettings.minBlobArea + 1, 2000000);
+        sensorSettings.maxKinectVoices = readJsonInt(kinectJson, "max_voices", sensorSettings.maxKinectVoices, 1, kMaxVoiceId + 1);
+        if (kinectJson.contains("voice_match_distance") && kinectJson["voice_match_distance"].is_number()) {
+            sensorSettings.voiceMatchDistance = clampFloat(kinectJson["voice_match_distance"].get<float>(), 0.01f, 2.0f);
+        }
+    }
+
+    if (json.contains("cameras") && json["cameras"].is_array()) {
+        for (const auto& cameraJson : json["cameras"]) {
+            if (!cameraJson.is_object()) {
+                continue;
+            }
+            int camId = readJsonInt(cameraJson, "id", -1, 0, kMaxCameraId);
+            if (camId < 0) {
+                ofLogWarning("calibration") << "camera entry missing valid id; skipping";
+                continue;
+            }
+
+            CameraCalibration camera;
+            camera.label = readJsonString(cameraJson, "label", "");
+
+            if (cameraJson.contains("grid") && cameraJson["grid"].is_object()) {
+                const auto& gridJson = cameraJson["grid"];
+                camera.gridCols = readJsonInt(gridJson, "cols", sensorSettings.camGridCols, 1, kMaxGridCols);
+                camera.gridRows = readJsonInt(gridJson, "rows", sensorSettings.camGridRows, 1, kMaxGridRows);
+            }
+
+            if (cameraJson.contains("ignored_zones") && cameraJson["ignored_zones"].is_array()) {
+                for (const auto& zoneJson : cameraJson["ignored_zones"]) {
+                    if (!zoneJson.is_number_integer()) {
+                        continue;
+                    }
+                    int zoneIndex = zoneJson.get<int>();
+                    if (zoneIndex >= 0 && zoneIndex < kMaxZoneValues) {
+                        camera.ignoredZones.insert(zoneIndex);
+                    }
+                }
+            }
+
+            if (cameraJson.contains("zone_labels") && cameraJson["zone_labels"].is_object()) {
+                for (const auto& item : cameraJson["zone_labels"].items()) {
+                    try {
+                        int zoneIndex = std::stoi(item.key());
+                        if (zoneIndex >= 0 && zoneIndex < kMaxZoneValues && item.value().is_string()) {
+                            camera.zoneLabels[zoneIndex] = item.value().get<std::string>();
+                        }
+                    } catch (const std::exception&) {
+                        ofLogWarning("calibration") << "zone label key '" << item.key() << "' is not numeric; skipping";
+                    }
+                }
+            }
+
+            loaded.cameras[camId] = camera;
+        }
+    }
+
+    roomCalibration = loaded;
+    for (int camId = 0; camId < kCameraCount; ++camId) {
+        auto& source = cameraSources[camId];
+        source.smoothedZones.assign(getCameraGridRows(camId) * getCameraGridCols(camId), 0.0f);
+        source.hasPrevious = false;
+    }
+
+    ofLogNotice("calibration") << "loaded room '" << roomCalibration.roomName << "' with "
+                               << roomCalibration.cameras.size() << " calibrated camera entries";
+}
+
+void ofApp::saveRoomCalibration() const {
+    ofJson json;
+    json["room_name"] = roomCalibration.roomName;
+    json["notes"] = roomCalibration.notes;
+    json["kinect"] = {
+        {"min_depth_mm", sensorSettings.kinectMinDepthMm},
+        {"max_depth_mm", sensorSettings.kinectMaxDepthMm},
+        {"min_blob_area", sensorSettings.minBlobArea},
+        {"max_blob_area", sensorSettings.maxBlobArea},
+        {"max_voices", sensorSettings.maxKinectVoices},
+        {"voice_match_distance", sensorSettings.voiceMatchDistance},
+    };
+
+    json["cameras"] = ofJson::array();
+    for (int camId = 0; camId < kCameraCount; ++camId) {
+        CameraCalibration camera;
+        auto it = roomCalibration.cameras.find(camId);
+        if (it != roomCalibration.cameras.end()) {
+            camera = it->second;
+        }
+
+        ofJson cameraJson;
+        cameraJson["id"] = camId;
+        cameraJson["label"] = camera.label;
+        int cols = camera.gridCols > 0 ? camera.gridCols : sensorSettings.camGridCols;
+        int rows = camera.gridRows > 0 ? camera.gridRows : sensorSettings.camGridRows;
+        cameraJson["grid"] = {
+            {"cols", cols},
+            {"rows", rows},
+        };
+
+        cameraJson["ignored_zones"] = ofJson::array();
+        for (int zoneIndex : camera.ignoredZones) {
+            cameraJson["ignored_zones"].push_back(zoneIndex);
+        }
+
+        cameraJson["zone_labels"] = ofJson::object();
+        for (const auto& label : camera.zoneLabels) {
+            cameraJson["zone_labels"][std::to_string(label.first)] = label.second;
+        }
+
+        json["cameras"].push_back(cameraJson);
+    }
+
+    const std::string calibrationPath = ofToDataPath(settings.roomCalibrationFile);
+    std::ofstream out(calibrationPath);
+    if (!out) {
+        ofLogError("calibration") << "failed to open " << calibrationPath << " for writing";
+        return;
+    }
+    out << json.dump(2) << std::endl;
+    ofLogNotice("calibration") << "saved room calibration to " << calibrationPath;
 }
 
 void ofApp::loadGestureConfig() {
@@ -439,7 +797,10 @@ void ofApp::loadGestureConfig() {
 
     auto applyUInt64 = [](const ofxJSONElement& node, const std::string& key, uint64_t& target) {
         if (node.isMember(key) && node[key].isNumeric()) {
-            target = static_cast<uint64_t>(node[key].asDouble());
+            double value = node[key].asDouble();
+            if (value >= 0.0) {
+                target = static_cast<uint64_t>(value);
+            }
         }
     };
 
@@ -494,7 +855,45 @@ void ofApp::loadGestureConfig() {
         applyUInt64(global, "stillness_cooldown_ms", globalConfig.stillnessCooldownMs);
     }
 
-    voiceHistoryCapacity = historyCapacity;
+    voiceConfig.raiseDeltaY = clampFloat(voiceConfig.raiseDeltaY, 0.01f, 2.0f);
+    voiceConfig.lowerDeltaY = clampFloat(voiceConfig.lowerDeltaY, 0.01f, 2.0f);
+    voiceConfig.swipeDeltaX = clampFloat(voiceConfig.swipeDeltaX, 0.01f, 2.0f);
+    voiceConfig.swipeOrthogonality = clampFloat(voiceConfig.swipeOrthogonality, 0.1f, 10.0f);
+    voiceConfig.raiseHorizontalLimit = clampFloat(voiceConfig.raiseHorizontalLimit, 0.0f, 2.0f);
+    voiceConfig.swipeVerticalLimit = clampFloat(voiceConfig.swipeVerticalLimit, 0.0f, 2.0f);
+    voiceConfig.shakeRadius = clampFloat(voiceConfig.shakeRadius, 0.01f, 2.0f);
+    voiceConfig.shakeMinSignFlips = clampInt(voiceConfig.shakeMinSignFlips, 1, 64);
+    voiceConfig.shakeMinMotion = clampFloat(voiceConfig.shakeMinMotion, 0.0f, 10.0f);
+    voiceConfig.burstSpeedThreshold = clampFloat(voiceConfig.burstSpeedThreshold, 0.0f, 100.0f);
+    voiceConfig.burstMaxSpeed = std::max(voiceConfig.burstSpeedThreshold + 0.01f, clampFloat(voiceConfig.burstMaxSpeed, 0.01f, 100.0f));
+    voiceConfig.holdMotionThreshold = clampFloat(voiceConfig.holdMotionThreshold, 0.0f, 10.0f);
+    voiceConfig.holdDurationMs = clampUInt64(voiceConfig.holdDurationMs, 1, 60000);
+    voiceConfig.minWindowMs = clampUInt64(voiceConfig.minWindowMs, 1, 60000);
+    voiceConfig.maxWindowMs = std::max(voiceConfig.minWindowMs, clampUInt64(voiceConfig.maxWindowMs, 1, 60000));
+    voiceConfig.gestureCooldownMs = clampUInt64(voiceConfig.gestureCooldownMs, 0, 60000);
+    voiceConfig.burstCooldownMs = clampUInt64(voiceConfig.burstCooldownMs, 0, 60000);
+    voiceConfig.holdCooldownMs = clampUInt64(voiceConfig.holdCooldownMs, 0, 60000);
+
+    zoneConfig.historyMs = clampUInt64(zoneConfig.historyMs, 1, 60000);
+    zoneConfig.sweepWindowMs = clampUInt64(zoneConfig.sweepWindowMs, 1, zoneConfig.historyMs);
+    zoneConfig.sweepMinSteps = clampInt(zoneConfig.sweepMinSteps, 2, 256);
+    zoneConfig.sweepMinStrength = clampFloat(zoneConfig.sweepMinStrength, 0.0f, 1.0f);
+    zoneConfig.sweepCooldownMs = clampUInt64(zoneConfig.sweepCooldownMs, 0, 60000);
+    zoneConfig.pulseThreshold = clampFloat(zoneConfig.pulseThreshold, 0.0f, 1.0f);
+    zoneConfig.pulseSlopeThreshold = clampFloat(zoneConfig.pulseSlopeThreshold, 0.0f, 1.0f);
+    zoneConfig.pulseCooldownMs = clampUInt64(zoneConfig.pulseCooldownMs, 0, 60000);
+
+    globalConfig.historyMs = clampUInt64(globalConfig.historyMs, 1, 60000);
+    globalConfig.eruptionLow = clampFloat(globalConfig.eruptionLow, 0.0f, 1.0f);
+    globalConfig.eruptionHigh = clampFloat(globalConfig.eruptionHigh, globalConfig.eruptionLow, 1.0f);
+    globalConfig.eruptionCooldownMs = clampUInt64(globalConfig.eruptionCooldownMs, 0, 60000);
+    globalConfig.eruptionWindowMs = clampUInt64(globalConfig.eruptionWindowMs, 1, globalConfig.historyMs);
+    globalConfig.stillnessMotionThreshold = clampFloat(globalConfig.stillnessMotionThreshold, 0.0f, 1.0f);
+    globalConfig.stillnessDurationMs = clampUInt64(globalConfig.stillnessDurationMs, 1, 60000);
+    globalConfig.stillnessMinVoices = clampInt(globalConfig.stillnessMinVoices, 1, kMaxVoiceId + 1);
+    globalConfig.stillnessCooldownMs = clampUInt64(globalConfig.stillnessCooldownMs, 0, 60000);
+
+    voiceHistoryCapacity = std::min<std::size_t>(historyCapacity, 600);
     gestureHistory.setCapacity(voiceHistoryCapacity);
     voiceDetector.setConfig(voiceConfig);
     zoneDetector.setConfig(zoneConfig);
@@ -504,46 +903,424 @@ void ofApp::loadGestureConfig() {
                   << " (history " << voiceHistoryCapacity << " frames)";
 }
 
-void ofApp::processOscMessages() {
+void ofApp::setupSensors() {
+    if (!settings.enableSensors) {
+        return;
+    }
+
+    kinect.setRegistration(true);
+    kinect.init();
+    kinect.open();
+    kinectReady = kinect.isConnected();
+    if (kinectReady) {
+        int width = static_cast<int>(kinect.getWidth());
+        int height = static_cast<int>(kinect.getHeight());
+        kinectThresholdImage.allocate(width, height);
+        kinectThresholdPixels.assign(width * height, 0);
+        ofLogNotice("sensors") << "Kinect ready at " << width << "x" << height;
+    } else {
+        ofLogWarning("sensors") << "Kinect not connected; OSC replay and webcams can still feed the host";
+    }
+
+    for (int camId = 0; camId < kCameraCount; ++camId) {
+        auto& source = cameraSources[camId];
+        source.grabber.setDeviceID(camId);
+        source.ready = source.grabber.setup(sensorSettings.cameraWidth, sensorSettings.cameraHeight);
+        source.smoothedZones.assign(getCameraGridRows(camId) * getCameraGridCols(camId), 0.0f);
+        if (source.ready) {
+            ofLogNotice("sensors") << "webcam " << camId << " ready at "
+                                   << sensorSettings.cameraWidth << "x" << sensorSettings.cameraHeight;
+        } else {
+            ofLogWarning("sensors") << "webcam " << camId << " unavailable";
+        }
+    }
+}
+
+void ofApp::updateSensors(uint64_t now) {
+    if (!settings.enableSensors) {
+        return;
+    }
+
+    updateKinectVoices(now);
+    updateWebcamMotion(now);
+}
+
+void ofApp::updateKinectVoices(uint64_t now) {
+    if (!kinectReady) {
+        return;
+    }
+
+    kinect.update();
+    if (!kinect.isFrameNew()) {
+        return;
+    }
+
+    const int width = static_cast<int>(kinect.getWidth());
+    const int height = static_cast<int>(kinect.getHeight());
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    if (static_cast<int>(kinectThresholdPixels.size()) != width * height) {
+        kinectThresholdImage.allocate(width, height);
+        kinectThresholdPixels.assign(width * height, 0);
+    }
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            float distanceMm = kinect.getDistanceAt(x, y);
+            bool foreground = distanceMm >= sensorSettings.kinectMinDepthMm && distanceMm <= sensorSettings.kinectMaxDepthMm;
+            kinectThresholdPixels[y * width + x] = foreground ? 255 : 0;
+        }
+    }
+
+    kinectThresholdImage.setFromPixels(kinectThresholdPixels.data(), width, height);
+    contourFinder.findContours(kinectThresholdImage,
+                               sensorSettings.minBlobArea,
+                               sensorSettings.maxBlobArea,
+                               sensorSettings.maxKinectVoices,
+                               false);
+
+    std::vector<KinectBlob> blobs;
+    blobs.reserve(contourFinder.blobs.size());
+    for (const auto& blob : contourFinder.blobs) {
+        float distanceMm = kinect.getDistanceAt(static_cast<int>(blob.centroid.x), static_cast<int>(blob.centroid.y));
+        float normalizedDepth = ofMap(distanceMm,
+                                      static_cast<float>(sensorSettings.kinectMinDepthMm),
+                                      static_cast<float>(sensorSettings.kinectMaxDepthMm),
+                                      0.0f,
+                                      1.0f,
+                                      true);
+
+        KinectBlob normalized;
+        normalized.position = glm::vec3(ofMap(blob.centroid.x, 0.0f, static_cast<float>(width), -1.0f, 1.0f, true),
+                                        ofMap(blob.centroid.y, 0.0f, static_cast<float>(height), 0.0f, 1.0f, true),
+                                        normalizedDepth);
+        normalized.size = clampFloat(blob.area / static_cast<float>(sensorSettings.maxBlobArea), 0.0f, 1.0f);
+        blobs.push_back(normalized);
+    }
+
+    std::vector<VoiceTracker::Blob> trackerBlobs;
+    trackerBlobs.reserve(blobs.size());
+    for (const auto& blob : blobs) {
+        trackerBlobs.push_back({blob.position, blob.size});
+    }
+
+    std::vector<VoiceTracker::Track> tracks;
+    tracks.reserve(voices.size());
+    for (const auto& kv : voices) {
+        tracks.push_back({kv.first,
+                          kv.second.position,
+                          kv.second.velocity,
+                          kv.second.lastUpdate,
+                          kv.second.active});
+    }
+
+    VoiceTracker::Config trackerConfig;
+    trackerConfig.maxMatchDistance = sensorSettings.voiceMatchDistance;
+    trackerConfig.maxVoices = std::min(sensorSettings.maxKinectVoices, kMaxVoiceId + 1);
+
+    const auto assignments = VoiceTracker::assign(trackerBlobs, tracks, trackerConfig, now);
+    for (const auto& assignment : assignments) {
+        if (assignment.voiceId < 0 || assignment.blobIndex < 0 || assignment.blobIndex >= static_cast<int>(blobs.size())) {
+            continue;
+        }
+        int voiceId = assignment.voiceId;
+        const auto& blob = blobs[assignment.blobIndex];
+        lastSensorInputTimestamp = now;
+
+        auto previous = voices.find(voiceId);
+        float motion = 0.0f;
+        float energy = blob.size;
+        if (previous != voices.end()) {
+            motion = clampFloat(glm::length(blob.position - previous->second.position) * 3.0f, 0.0f, 1.0f);
+            energy = clampFloat((previous->second.energy * 0.65f) + (std::max(blob.size, motion) * 0.35f), 0.0f, 1.0f);
+        }
+
+        ingestVoiceState(voiceId, blob.position, blob.size, motion, energy, now, true);
+    }
+}
+
+void ofApp::updateWebcamMotion(uint64_t now) {
+    float globalSum = 0.0f;
+    int activeCameras = 0;
+
+    for (int camId = 0; camId < kCameraCount; ++camId) {
+        auto& source = cameraSources[camId];
+        if (!source.ready) {
+            continue;
+        }
+
+        source.grabber.update();
+        if (!source.grabber.isFrameNew()) {
+            continue;
+        }
+
+        const ofPixels& pixels = source.grabber.getPixels();
+        const int width = static_cast<int>(pixels.getWidth());
+        const int height = static_cast<int>(pixels.getHeight());
+        const int channels = static_cast<int>(pixels.getNumChannels());
+        if (width <= 0 || height <= 0 || channels <= 0) {
+            continue;
+        }
+        if (source.hasPrevious && static_cast<int>(source.previousGray.size()) != width * height) {
+            source.hasPrevious = false;
+        }
+
+        const int cols = getCameraGridCols(camId);
+        const int rows = getCameraGridRows(camId);
+        const int zoneCount = rows * cols;
+        std::vector<float> zoneSums(zoneCount, 0.0f);
+        std::vector<int> zoneCounts(zoneCount, 0);
+        std::vector<unsigned char> currentGray(width * height, 0);
+
+        const unsigned char* data = pixels.getData();
+        for (int y = 0; y < height; ++y) {
+            int row = std::min(rows - 1, (y * rows) / height);
+            for (int x = 0; x < width; ++x) {
+                int pixelIndex = y * width + x;
+                int dataIndex = pixelIndex * channels;
+                unsigned char gray = data[dataIndex];
+                if (channels >= 3) {
+                    gray = static_cast<unsigned char>((static_cast<int>(data[dataIndex]) +
+                                                       static_cast<int>(data[dataIndex + 1]) +
+                                                       static_cast<int>(data[dataIndex + 2])) /
+                                                      3);
+                }
+                currentGray[pixelIndex] = gray;
+
+                if (!source.hasPrevious) {
+                    continue;
+                }
+
+                int col = std::min(cols - 1, (x * cols) / width);
+                int zoneIndex = row * cols + col;
+                float diff = std::abs(static_cast<int>(gray) - static_cast<int>(source.previousGray[pixelIndex])) / 255.0f;
+                if (diff < sensorSettings.cameraMotionFloor) {
+                    diff = 0.0f;
+                }
+                zoneSums[zoneIndex] += diff;
+                zoneCounts[zoneIndex] += 1;
+            }
+        }
+
+        if (!source.hasPrevious || static_cast<int>(source.previousGray.size()) != width * height) {
+            source.previousGray.allocate(width, height, OF_PIXELS_GRAY);
+            source.hasPrevious = true;
+        }
+        std::copy(currentGray.begin(), currentGray.end(), source.previousGray.getData());
+
+        if (static_cast<int>(source.smoothedZones.size()) != zoneCount) {
+            source.smoothedZones.assign(zoneCount, 0.0f);
+        }
+
+        float cameraMotion = 0.0f;
+        for (int i = 0; i < zoneCount; ++i) {
+            float raw = zoneCounts[i] > 0 ? zoneSums[i] / static_cast<float>(zoneCounts[i]) : 0.0f;
+            raw = clampFloat(raw * 4.0f, 0.0f, 1.0f);
+            source.smoothedZones[i] = clampFloat((source.smoothedZones[i] * sensorSettings.cameraSmoothing) +
+                                                 (raw * (1.0f - sensorSettings.cameraSmoothing)),
+                                                 0.0f,
+                                                 1.0f);
+            if (isZoneIgnored(camId, i)) {
+                source.smoothedZones[i] = 0.0f;
+            }
+            cameraMotion += source.smoothedZones[i];
+        }
+        cameraMotion = zoneCount > 0 ? cameraMotion / static_cast<float>(zoneCount) : 0.0f;
+
+        ingestCameraZones(camId, rows, cols, source.smoothedZones, now, true);
+        lastSensorInputTimestamp = now;
+        globalSum += cameraMotion;
+        activeCameras += 1;
+    }
+
+    if (activeCameras > 0) {
+        ingestGlobalMotion(globalSum / static_cast<float>(activeCameras), now, true);
+    }
+}
+
+void ofApp::ingestVoiceState(int voiceId, const glm::vec3& position, float size, float motion, float energy, uint64_t now, bool emitTelemetry) {
+    if (voiceId < 0 || voiceId > kMaxVoiceId) {
+        ofLogWarning() << "dropping voice state for out-of-range voice id " << voiceId;
+        return;
+    }
+
+    VoiceState& state = voices[voiceId];
+    bool wasActive = state.active;
+    uint64_t previousUpdate = state.lastUpdate;
+    glm::vec3 previousPosition = state.position;
+    state.position = glm::vec3(clampFloat(position.x, -1.0f, 1.0f),
+                               clampFloat(position.y, -1.0f, 1.0f),
+                               clampFloat(position.z, 0.0f, 1.0f));
+    state.size = clampFloat(size, 0.0f, 1.0f);
+    state.motion = clampFloat(motion, 0.0f, 1.0f);
+    state.energy = clampFloat(energy, 0.0f, 1.0f);
+    if (previousUpdate > 0 && now > previousUpdate) {
+        float dtSeconds = static_cast<float>(now - previousUpdate) / 1000.0f;
+        state.velocity = dtSeconds > 0.0f ? (state.position - previousPosition) / dtSeconds : glm::vec3(0.0f);
+    } else {
+        state.velocity = glm::vec3(0.0f);
+    }
+    state.lastUpdate = now;
+    state.active = true;
+
+    gestureHistory.addSample(voiceId, state.position, state.motion, state.energy, now);
+
+    if (emitTelemetry && settings.enableSending) {
+        if (!wasActive) {
+            sendVoiceActive(voiceId, true);
+        }
+        sendVoiceState(voiceId, state);
+        sendVoiceNote(voiceId, ofMap(state.position.x, -1.0f, 1.0f, 48.0f, 72.0f, true), std::max(state.energy, 0.05f));
+    }
+}
+
+void ofApp::ingestCameraZones(int camId, int rows, int cols, const std::vector<float>& zones, uint64_t now, bool emitTelemetry) {
+    if (camId < 0 || camId > kMaxCameraId) {
+        ofLogWarning() << "dropping zones for out-of-range camera id " << camId;
+        return;
+    }
+    if (rows <= 0 || cols <= 0 || rows > kMaxGridRows || cols > kMaxGridCols || rows * cols > kMaxZoneValues) {
+        ofLogWarning() << "camera " << camId << " reported invalid zone grid " << cols << "x" << rows << " – skipping";
+        return;
+    }
+    if (static_cast<int>(zones.size()) < rows * cols) {
+        ofLogWarning() << "camera " << camId << " zones message missing values: " << zones.size()
+                       << " provided, expected " << rows * cols;
+        return;
+    }
+
+    std::vector<float> clampedZones(rows * cols, 0.0f);
+    for (int i = 0; i < rows * cols; ++i) {
+        clampedZones[i] = isZoneIgnored(camId, i) ? 0.0f : clampFloat(zones[i], 0.0f, 1.0f);
+    }
+
     std::vector<ZoneGestureEvent> zoneEvents;
+    zoneDetector.updateCamera(camId, rows, cols, clampedZones, now, zoneEvents);
+    for (const auto& event : zoneEvents) {
+        sendZoneEvent(event);
+    }
+    lastZoneUpdate = now;
+
+    if (emitTelemetry && settings.enableSending) {
+        sendCameraZones(camId, rows, cols, clampedZones);
+    }
+}
+
+void ofApp::ingestGlobalMotion(float globalMotion, uint64_t now, bool emitTelemetry) {
+    lastGlobalMotion = clampFloat(globalMotion, 0.0f, 1.0f);
+    lastGlobalMotionTimestamp = now;
+
+    if (emitTelemetry && settings.enableSending) {
+        sendGlobalMotion(lastGlobalMotion);
+    }
+}
+
+bool ofApp::isZoneIgnored(int camId, int zoneIndex) const {
+    auto camIt = roomCalibration.cameras.find(camId);
+    if (camIt == roomCalibration.cameras.end()) {
+        return false;
+    }
+    return camIt->second.ignoredZones.find(zoneIndex) != camIt->second.ignoredZones.end();
+}
+
+int ofApp::countIgnoredZones() const {
+    int total = 0;
+    for (const auto& camera : roomCalibration.cameras) {
+        total += static_cast<int>(camera.second.ignoredZones.size());
+    }
+    return total;
+}
+
+int ofApp::getCameraGridCols(int camId) const {
+    auto camIt = roomCalibration.cameras.find(camId);
+    if (camIt != roomCalibration.cameras.end() && camIt->second.gridCols > 0) {
+        return camIt->second.gridCols;
+    }
+    return sensorSettings.camGridCols;
+}
+
+int ofApp::getCameraGridRows(int camId) const {
+    auto camIt = roomCalibration.cameras.find(camId);
+    if (camIt != roomCalibration.cameras.end() && camIt->second.gridRows > 0) {
+        return camIt->second.gridRows;
+    }
+    return sensorSettings.camGridRows;
+}
+
+std::string ofApp::getCameraLabel(int camId) const {
+    auto camIt = roomCalibration.cameras.find(camId);
+    if (camIt == roomCalibration.cameras.end()) {
+        return "";
+    }
+    return camIt->second.label;
+}
+
+std::string ofApp::getZoneLabel(int camId, int zoneIndex) const {
+    auto camIt = roomCalibration.cameras.find(camId);
+    if (camIt == roomCalibration.cameras.end()) {
+        return "";
+    }
+    auto labelIt = camIt->second.zoneLabels.find(zoneIndex);
+    if (labelIt == camIt->second.zoneLabels.end()) {
+        return "";
+    }
+    return labelIt->second;
+}
+
+void ofApp::processOscMessages() {
     ofxOscMessage message;
     uint64_t now = nowMillis();
+    int messagesProcessed = 0;
 
-    while (stateReceiver.hasWaitingMessages()) {
+    if (!settings.enableOscInput) {
+        return;
+    }
+
+    while (stateReceiver.hasWaitingMessages() && messagesProcessed < kMaxOscMessagesPerFrame) {
         stateReceiver.getNextMessage(message);
+        ++messagesProcessed;
+        lastOscInputTimestamp = now;
         const std::string& address = message.getAddress();
 
-        if (address == "/room/voice/state" && message.getNumArgs() >= 7) {
+        if (address == "/room/config/reload") {
+            loadRoomCalibration();
+            loadGestureConfig();
+            ofLogNotice("config") << "reloaded calibration and gesture tuning via OSC";
+        } else if (address == "/room/config/sending" && message.getNumArgs() >= 1) {
+            settings.enableSending = message.getArgAsInt(0) != 0;
+            ofLogNotice("config") << "OSC sending " << (settings.enableSending ? "enabled" : "disabled");
+        } else if (address == "/room/config/sensors" && message.getNumArgs() >= 1) {
+            settings.enableSensors = message.getArgAsInt(0) != 0;
+            ofLogNotice("config") << "sensor capture " << (settings.enableSensors ? "enabled" : "disabled");
+        } else if (address == "/room/global/reset") {
+            resetTrackingState(true);
+            ofLogNotice("config") << "tracking state reset via OSC";
+        } else if (address == "/room/voice/state" && message.getNumArgs() >= 7) {
             // Voice payload mirrors the OSC schema: id, xyz, size, motion, energy.
             int voiceId = message.getArgAsInt(0);
             glm::vec3 position(message.getArgAsFloat(1), message.getArgAsFloat(2), message.getArgAsFloat(3));
-            float size = message.getArgAsFloat(4);
-            float motion = message.getArgAsFloat(5);
-            float energy = message.getArgAsFloat(6);
-
-            VoiceState& state = voices[voiceId];
-            state.position = position;
-            state.size = size;
-            state.motion = motion;
-            state.energy = energy;
-            state.lastUpdate = now;
-
-            gestureHistory.addSample(voiceId, position, motion, energy, now);
+            ingestVoiceState(voiceId, position, message.getArgAsFloat(4), message.getArgAsFloat(5), message.getArgAsFloat(6), now, true);
         } else if (address == "/room/voice/disconnect" && message.getNumArgs() >= 1) {
             int voiceId = message.getArgAsInt(0);
+            if (voiceId < 0 || voiceId > kMaxVoiceId) {
+                ofLogWarning() << "dropping disconnect for out-of-range voice id " << voiceId;
+                continue;
+            }
             voices.erase(voiceId);
             gestureHistory.removeVoice(voiceId);
             voiceDetector.removeVoice(voiceId);
+            sendVoiceActive(voiceId, false);
             ofLogNotice() << "voice " << voiceId << " removed";
         } else if (address == "/room/camera/zones" && message.getNumArgs() >= 3) {
             int camId = message.getArgAsInt(0);
-            int rows = message.getArgAsInt(1);
-            int cols = message.getArgAsInt(2);
-            int expectedArgs = 3 + rows * cols;
-            if (rows <= 0 || cols <= 0) {
-                ofLogWarning() << "camera " << camId << " reported invalid zone grid " << rows << "x" << cols << " – skipping";
+            int cols = message.getArgAsInt(1);
+            int rows = message.getArgAsInt(2);
+            if (rows <= 0 || cols <= 0 || rows > kMaxGridRows || cols > kMaxGridCols || rows * cols > kMaxZoneValues) {
+                ofLogWarning() << "camera " << camId << " reported invalid zone grid " << cols << "x" << rows << " – skipping";
                 continue;
             }
+            int expectedArgs = 3 + rows * cols;
             if (message.getNumArgs() < expectedArgs) {
                 ofLogWarning() << "camera " << camId << " zones message missing values: " << message.getNumArgs() - 3
                                << " provided, expected " << rows * cols;
@@ -554,18 +1331,43 @@ void ofApp::processOscMessages() {
             for (int i = 0; i < rows * cols; ++i) {
                 zones[i] = message.getArgAsFloat(3 + i);
             }
-
-            zoneEvents.clear();
-            zoneDetector.updateCamera(camId, rows, cols, zones, now, zoneEvents);
-            for (const auto& event : zoneEvents) {
-                sendZoneEvent(event);
-            }
-            lastZoneUpdate = now;
+            ingestCameraZones(camId, rows, cols, zones, now, true);
         } else if (address == "/room/global/motion" && message.getNumArgs() >= 1) {
-            lastGlobalMotion = message.getArgAsFloat(0);
-            lastGlobalMotionTimestamp = now;
+            ingestGlobalMotion(message.getArgAsFloat(0), now, true);
         }
     }
+
+    if (messagesProcessed >= kMaxOscMessagesPerFrame && stateReceiver.hasWaitingMessages()) {
+        ++oscBacklogWarnings;
+        ofLogWarning() << "OSC backlog exceeded " << kMaxOscMessagesPerFrame << " messages this frame; leaving remaining messages queued";
+    }
+}
+
+void ofApp::resetTrackingState(bool emitVoiceInactive) {
+    if (emitVoiceInactive) {
+        for (const auto& kv : voices) {
+            if (kv.second.active) {
+                sendVoiceActive(kv.first, false);
+            }
+        }
+    }
+
+    for (const auto& kv : voices) {
+        gestureHistory.removeVoice(kv.first);
+        voiceDetector.removeVoice(kv.first);
+    }
+    voices.clear();
+
+    for (int camId = 0; camId <= kMaxCameraId; ++camId) {
+        zoneDetector.removeCamera(camId);
+    }
+    globalDetector.reset();
+    lastVoiceGestures.clear();
+    recentZoneEvents.clear();
+    recentGlobalEvents.clear();
+    lastGlobalMotion = 0.0f;
+    lastGlobalMotionTimestamp = 0;
+    lastZoneUpdate = 0;
 }
 
 void ofApp::pruneVoices(uint64_t now) {
@@ -577,6 +1379,9 @@ void ofApp::pruneVoices(uint64_t now) {
             int voiceId = it->first;
             gestureHistory.removeVoice(voiceId);
             voiceDetector.removeVoice(voiceId);
+            if (it->second.active) {
+                sendVoiceActive(voiceId, false);
+            }
             it = voices.erase(it);
         } else {
             ++it;
@@ -609,6 +1414,80 @@ void ofApp::updateGlobalGestures(uint64_t now) {
     for (const auto& event : events) {
         sendGlobalEvent(event);
     }
+}
+
+void ofApp::sendVoiceState(int voiceId, const VoiceState& state) {
+    if (!settings.enableSending) {
+        return;
+    }
+
+    ofxOscMessage message;
+    message.setAddress(formatAddress(settings.voiceStateRoute.address, voiceId));
+    message.addIntArg(voiceId);
+    message.addFloatArg(state.position.x);
+    message.addFloatArg(state.position.y);
+    message.addFloatArg(state.position.z);
+    message.addFloatArg(state.size);
+    message.addFloatArg(state.motion);
+    message.addFloatArg(state.energy);
+    getSenderForRoute(settings.voiceStateRoute).sendMessage(message, false);
+    lastTelemetrySendTimestamp = nowMillis();
+}
+
+void ofApp::sendVoiceActive(int voiceId, bool active) {
+    if (!settings.enableSending) {
+        return;
+    }
+
+    ofxOscMessage message;
+    message.setAddress(formatAddress(settings.voiceActiveRoute.address, voiceId));
+    message.addIntArg(voiceId);
+    message.addIntArg(active ? 1 : 0);
+    getSenderForRoute(settings.voiceActiveRoute).sendMessage(message, false);
+    lastTelemetrySendTimestamp = nowMillis();
+}
+
+void ofApp::sendVoiceNote(int voiceId, float note, float velocity) {
+    if (!settings.enableSending) {
+        return;
+    }
+
+    ofxOscMessage message;
+    message.setAddress(formatAddress(settings.voiceNoteRoute.address, voiceId));
+    message.addIntArg(voiceId);
+    message.addFloatArg(note);
+    message.addFloatArg(clampFloat(velocity, 0.0f, 1.0f));
+    getSenderForRoute(settings.voiceNoteRoute).sendMessage(message, false);
+    lastTelemetrySendTimestamp = nowMillis();
+}
+
+void ofApp::sendCameraZones(int camId, int rows, int cols, const std::vector<float>& zones) {
+    if (!settings.enableSending) {
+        return;
+    }
+
+    ofxOscMessage message;
+    message.setAddress(formatAddress(settings.cameraZonesRoute.address, std::nullopt, camId));
+    message.addIntArg(camId);
+    message.addIntArg(cols);
+    message.addIntArg(rows);
+    for (int i = 0; i < rows * cols && i < static_cast<int>(zones.size()); ++i) {
+        message.addFloatArg(clampFloat(zones[i], 0.0f, 1.0f));
+    }
+    getSenderForRoute(settings.cameraZonesRoute).sendMessage(message, false);
+    lastTelemetrySendTimestamp = nowMillis();
+}
+
+void ofApp::sendGlobalMotion(float globalMotion) {
+    if (!settings.enableSending) {
+        return;
+    }
+
+    ofxOscMessage message;
+    message.setAddress(settings.globalMotionRoute.address);
+    message.addFloatArg(clampFloat(globalMotion, 0.0f, 1.0f));
+    getSenderForRoute(settings.globalMotionRoute).sendMessage(message, false);
+    lastTelemetrySendTimestamp = nowMillis();
 }
 
 void ofApp::sendVoiceEvent(const VoiceGestureEvent& event) {
@@ -673,4 +1552,3 @@ ofxOscSender& ofApp::getSenderForRoute(const OscRoute& route) {
     }
     return *(it->second);
 }
-

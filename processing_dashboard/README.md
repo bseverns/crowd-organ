@@ -14,6 +14,12 @@ Part periscope, part stage manager: this Processing sketch shows you what the ge
 4. Point your upstream tracker at the dashboard machine’s IP on that same port (default **9000**). You can also mirror gesture bursts to the secondary gesture feed on **9001** if you prefer—just align the port here to match.
 5. Keep the OSC shapes handy in [`docs/OSC_SCHEMA.md`](../docs/OSC_SCHEMA.md) so you know which payloads the visuals expect.
 
+The dashboard will load room labels from `processing_dashboard/data/room_calibration.json`
+when present. From this repo layout it also reads the host's selected
+`room_calibration_file` from `../of_app/bin/data/gesture_settings.json`, then
+falls back to `../of_app/bin/data/room_calibration.json`, so camera labels,
+named zones, and ignored-zone hatching show up without duplicating the config.
+
 ## Where to set the listening port
 - Crack open `CrowdOrganDashboard.pde` and find the `new OscP5(this, 9000);` call near the top.
 - Swap `9000` for whatever your sender uses, save, and re-run. That’s the one knob that matters here; everything else adapts to whatever arrives.
@@ -22,9 +28,10 @@ Part periscope, part stage manager: this Processing sketch shows you what the ge
 - **Header/footer**: labels the sketch and reminds you of keyboard toggles.
 - **Global motion meter (top-right)**: cyan fill tracks `/room/global/motion`; the most recent `/room/gesture/global` shows as a fading caption.
 - **Voice bubbles (center)**: one circle per active voice from `/room/voice/active` + `/room/voice/state`; note labels ride on `/room/voice/note`; gesture rings pulse on `/room/gesture/voice` with radius scaled by strength.
-- **Camera grids (bottom)**: per-camera heatmaps from `/room/camera/zones`; `/room/gesture/zone` outlines flash cells; sweeps paint translucent strokes across the viewport.
+- **Camera grids (bottom)**: per-camera heatmaps from `/room/camera/zones`; calibration labels annotate known cameras/zones, ignored zones are crossed out, `/room/gesture/zone` outlines flash cells, and sweeps paint translucent strokes across the viewport.
 - **Gesture log (right)**: rolling list of the latest `/room/gesture/*` events with type/scope/strength.
 - **Keyboard toggles**: `v` toggles voice gesture rings, `z` toggles zone flashes, `g` toggles global gesture captions.
+- **Host controls**: `r` sends `/room/config/reload`, `m` toggles `/room/config/sending`, `s` toggles `/room/config/sensors`, and `x` sends `/room/global/reset` to `127.0.0.1:9001`.
 
 ## No visuals? Check these ports/packets
 - Verify the dashboard is actually listening: `nc -lu 9000` (or your custom port) should print OSC bytes when the tracker is live.
